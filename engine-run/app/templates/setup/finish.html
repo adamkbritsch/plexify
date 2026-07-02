@@ -1,0 +1,6 @@
+<h1>You're all set</h1>
+<p class="muted">Here's what's connected:</p>
+<ul class="steps">
+  {% for k in numbered %}<li><strong>{{ labels[k] }}</strong> — {% if state[k].done %}<span class="pill on">connected</span>{% elif state[k].skipped %}<span class="muted">skipped (finish later)</span>{% else %}<span class="pill off">not set</span>{% endif %}</li>{% endfor %}
+</ul>
+<div class="wiz-foot"><span></span><a href="{{ url_for('main.dashboard') }}" class="btn primary">Go to dashboard →</a></div>

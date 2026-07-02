@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Plexify{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}?v=4">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-plexify.svg') }}">
+  <script>(function(){try{var t=localStorage.getItem('plexify_theme');if(t==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}})();</script>
+  <script>window.plxIcon=function(id){return '<svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#'+id+'"></use></svg>';};window.plxEsc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});};</script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=51">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand-wrap">
+      <a class="brand" href="{{ url_for('main.dashboard') }}">
+        <img id="brand-logo-img" src="{{ url_for('static', filename='logo-plexify.svg') }}?v=1"
+             data-dark-src="{{ url_for('static', filename='logo-plexify.svg') }}?v=1"
+             data-light-src="{{ url_for('static', filename='logo-plexify-black.svg') }}?v=1"
+             alt="Plexify" class="brand-logo-wordmark">
+      </a>
+      <span id="status-dot" class="status-dot" title="System status — click for details"></span>
+    </span>
+    <nav>
+      <a href="{{ url_for('main.dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('main.playlists') }}">Playlists</a>
+      <a href="{{ url_for('main.library_view') }}">Library</a>
+      <a href="{{ url_for('main.settings_view') }}">Settings</a>
+      <a href="{{ url_for('main.jobs_view') }}">Jobs</a>
+      <button id="theme-toggle" class="theme-toggle" type="button" title="Light / dark mode" aria-label="Toggle color scheme">
+        <svg class="icn" aria-hidden="true"><use id="theme-toggle-icon" href="/static/icons.svg#i-sun"/></svg>
+      </button>
+    </nav>
+  </header>
+
+  <main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashes">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <div id="toast-tray"></div>
+
+  <script>
+  // F-6: shared XSS escape for toast/poll job titles
+  function _escJobText(s) { return s == null ? "" : String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch])); }
+  const ALLOWED_STATUSES_TOAST = new Set(["pending","running","success","failed","error","cancelled","completed"]);
+const KEY = 'Plexify_tracked_jobs';
+    let tracked = JSON.parse(localStorage.getItem(KEY) || '{}');
+
+    function saveTracked() { localStorage.setItem(KEY, JSON.stringify(tracked)); }
+    function makeToast(jobId, title, body, status) {
+      const tray = document.getElementById('toast-tray');
+      let toast = document.getElementById(`toast-${jobId}`);
+      if (!toast) {
+        toast = document.createElement('div');
+        toast.id = `toast-${jobId}`;
+        toast.className = 'toast';
+        tray.appendChild(toast);
+      }
+      toast.innerHTML = `
+        <div class="toast-head">
+          <a class="toast-title" href="/jobs/${jobId}">Job #${jobId}: ${_escJobText(title)}</a>
+          <button class="toast-close" aria-label="dismiss">&times;</button>
+        </div>
+        <div class="toast-body ${ALLOWED_STATUSES_TOAST.has(status) ? status : "pending"}">${_escJobText(body)}</div>
+      `;
+      toast.querySelector('.toast-close').onclick = () => {
+        toast.remove();
+        delete tracked[jobId];
+        saveTracked();
+      };
+    }
+
+    // F-5: cap retries + pause on hidden tab + 404 termination
+    const _pjAttempts = {};
+    const _pjMaxAttempts = 1800;  // ~1hr at 2s
+    async function pollJob(jobId, lastEventId = 0) {
+      _pjAttempts[jobId] = (_pjAttempts[jobId] || 0) + 1;
+      if (_pjAttempts[jobId] > _pjMaxAttempts) {
+        console.warn('pollJob: giving up on job', jobId);
+        delete tracked[jobId]; saveTracked();
+        delete _pjAttempts[jobId];
+        return;
+      }
+      if (document.hidden) {
+        setTimeout(() => pollJob(jobId, lastEventId), 4000);
+        return;
+      }
+      try {
+        const r = await fetch(`/api/jobs/${jobId}?after=${lastEventId}`);
+        if (r.status === 404) {
+          delete tracked[jobId]; saveTracked();
+          delete _pjAttempts[jobId];
+          const toast = document.getElementById(`toast-${jobId}`);
+          if (toast) toast.remove();
+          return;
+        }
+        if (!r.ok) {
+          setTimeout(() => pollJob(jobId, lastEventId), Math.min(2000 * _pjAttempts[jobId], 30000));
+          return;
+        }
+        const j = await r.json();
+        const last = j.events?.length ? j.events[j.events.length - 1].id : lastEventId;
+        const body = j.progress_step
+          ? `${j.progress_step} (${j.progress_current}/${j.progress_total || '?'})`
+          : (j.message || '');
+        makeToast(jobId, j.title || j.kind, body, j.status);
+        if (['ok', 'error', 'partial', 'aborted'].includes(j.status)) {
+          if (window.PlexifyNotify) window.PlexifyNotify(`${_escJobText(j.title)}: ${j.status}`, body);
+          setTimeout(() => {
+            const toast = document.getElementById(`toast-${jobId}`);
+            if (toast) { toast.remove(); }
+            delete tracked[jobId];
+            saveTracked();
+            delete _pjAttempts[jobId];
+          }, j.status === 'ok' ? 4000 : 12000);
+        } else {
+          setTimeout(() => pollJob(jobId, last), 2000);
+        }
+      } catch (e) {
+        console.warn('pollJob', e);
+        setTimeout(() => pollJob(jobId, lastEventId), Math.min(2000 * _pjAttempts[jobId], 30000));
+      }
+    }
+
+    function track(jobId) {
+      tracked[jobId] = Date.now();
+      saveTracked();
+      pollJob(jobId);
+    }
+    window.PlexifyTrackJob = track;
+    window.PlexifyNotify = (title, body) => {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, { body, icon: '/static/favicon.svg' });
+      }
+    };
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
+    // Resume tracking on page load for in-flight jobs
+    Object.keys(tracked).forEach(id => pollJob(parseInt(id, 10)));
+
+    // Async form submit + auto-track returned job_id
+    document.querySelectorAll('form[data-async]').forEach(f => {
+      f.addEventListener('submit', async e => {
+        e.preventDefault();
+        const fd = new FormData(f);
+        const url = f.action + (f.action.includes('?') ? '&' : '?') + 'json=1';
+        const r = await fetch(url, { method: 'POST', body: fd, headers: { Accept: 'application/json' } });
+        if (r.headers.get('content-type')?.includes('json')) {
+          const j = await r.json();
+          if (j.job_id) track(j.job_id);
+        }
+      });
+    });
+  </script>
+<div id="status-popover" class="status-popover" role="dialog" aria-hidden="true"></div>
+<script>
+(function () {
+  const btn = document.getElementById('theme-toggle');
+  const icon = document.getElementById('theme-toggle-icon');
+  const logo = document.getElementById('brand-logo-img');
+  function apply(theme) {
+    if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    if (icon) icon.setAttribute('href', '/static/icons.svg#' + (theme === 'light' ? 'i-moon' : 'i-sun'));
+    if (logo) logo.src = theme === 'light' ? logo.dataset.lightSrc : logo.dataset.darkSrc;
+    try { localStorage.setItem('plexify_theme', theme); } catch (e) {}
+  }
+  const saved = (function(){ try { return localStorage.getItem('plexify_theme'); } catch (e) { return null; } })();
+  apply(saved === 'light' ? 'light' : 'dark');
+  if (btn) btn.addEventListener('click', () => {
+    const light = document.documentElement.getAttribute('data-theme') === 'light';
+    apply(light ? 'dark' : 'light');
+  });
+})();
+</script>
+<script src="{{ url_for('static', filename='dashboard-status-dot.js') }}"></script>
+<script src="{{ url_for('static', filename='telemetry.js') }}?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,406 @@
+{% extends "base.html" %}
+{% block title %}Library Autofill — Plexify{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Library Autofill</h1>
+  <p class="muted">
+    Fills gaps in your Plex music library by detecting Spotify tracks you've
+    saved but don't yet own, then acquiring them via SpotiFLAC and dropping
+    files into <code>/plexify-music/{Artist}/{Album}/</code> where Plex picks them up.
+  </p>
+</div>
+
+
+{# ── Serialization status (1-at-a-time) ─────────────────────── #}
+<section class="card">
+  <h2>Concurrency <small class="muted" data-tip="How many albums the picker downloads in parallel. Higher = faster but harder on Tidal/Qobuz mirrors. Default 6.">(?)</small></h2>
+  <p class="muted small">
+    Currently <strong id="conc-current">{{ get_config('autofill_picker_concurrency', '6') }}</strong> albums download in parallel.
+    Picker tick fires every 90s.
+  </p>
+  <form id="conc-form" method="post" action="{{ url_for('main.library_autofill_save_concurrency') }}" class="stack">
+    <label class="conc-slider-row">
+      <span class="muted small">Concurrent downloads</span>
+      <input type="range" id="conc-slider" name="autofill_picker_concurrency"
+             min="3" max="20" step="1"
+             value="{{ get_config('autofill_picker_concurrency', '6') }}">
+      <output id="conc-output" for="conc-slider">{{ get_config('autofill_picker_concurrency', '6') }}</output>
+    </label>
+    <small class="muted">3 = gentle on providers · 6 = balanced · 12 = aggressive · 20 = max<br>Tick interval auto-scales: 90s ÷ concurrency (5s floor)</small>
+    <span id="conc-status" class="muted small"></span>
+  </form>
+</section>
+
+
+<section class="card" id="qobuz-token-card">
+  <h2>Qobuz auth token <small class="muted" data-tip="Optional. Unlocks authenticated Tidal + Qobuz downloads via SpotiFLAC (one token for both). When the unauthorized scraper APIs are down (which is most of the time), this is what makes the difference between 0% and 80%+ success.">(?)</small></h2>
+  <p class="muted small">
+    Optional but <strong>highly recommended</strong>. When set, SpotiFLAC uses authenticated
+    Tidal &amp; Qobuz endpoints instead of the (frequently-broken) reverse-engineered scrapers.
+    Get a token from your active Qobuz session (browser DevTools → Network → look for
+    <code>user_auth_token</code> in any API request).
+  </p>
+  <form id="qobuz-token-form" method="post"
+        action="{{ url_for('main.library_autofill_save_qobuz_token') }}"
+        class="stack">
+    <label class="qobuz-token-row">
+      <span class="muted small">Token</span>
+      <input type="password" id="qobuz-token-input"
+             name="spotiflac_qobuz_token"
+             placeholder="{% if get_config('spotiflac_qobuz_token') %}(set — clear field + save to remove){% else %}paste token here{% endif %}"
+             value=""
+             autocomplete="off"
+             spellcheck="false">
+      <button type="button" id="qobuz-token-show" class="btn">show</button>
+      <button type="submit" class="btn primary">Save</button>
+    </label>
+    <span id="qobuz-token-status" class="muted small">
+      Current: <strong>{% if get_config('spotiflac_qobuz_token') %}set <svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-check"></use></svg>{% else %}not set{% endif %}</strong>
+    </span>
+  </form>
+</section>
+
+<style>
+.qobuz-token-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  flex-wrap: wrap;
+}
+.qobuz-token-row input[type="password"], .qobuz-token-row input[type="text"] {
+  flex: 1; min-width: 240px; max-width: 520px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: #e7e9ee;
+}
+.qobuz-token-row input:focus {
+  border-color: rgba(29,185,84,0.45);
+  outline: none;
+}
+#qobuz-token-status { display: block; }
+#qobuz-token-status.success { color: #1db954; }
+#qobuz-token-status.error   { color: #ff6b6b; }
+</style>
+
+<script>
+(function() {
+  const form   = document.getElementById('qobuz-token-form');
+  const input  = document.getElementById('qobuz-token-input');
+  const showBtn = document.getElementById('qobuz-token-show');
+  const status = document.getElementById('qobuz-token-status');
+  if (!form) return;
+
+  showBtn.addEventListener('click', () => {
+    if (input.type === 'password') {
+      input.type = 'text';
+      showBtn.textContent = 'hide';
+    } else {
+      input.type = 'password';
+      showBtn.textContent = 'show';
+    }
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    status.classList.remove('success', 'error');
+    status.textContent = 'saving...';
+    try {
+      const r = await fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        headers: { 'X-Requested-With': 'fetch' },
+      });
+      const d = await r.json();
+      if (d.ok) {
+        status.classList.add('success');
+        const word = d.set ? ('set ' + plxIcon('i-check') + ' ' + (d.preview ? '(' + d.preview + ')' : '')) : 'cleared';
+        status.innerHTML = 'Current: <strong>' + word + '</strong>';
+        input.value = '';
+        input.type = 'password';
+        showBtn.textContent = 'show';
+      } else {
+        status.classList.add('error');
+        status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(d.error || 'unknown error');
+      }
+    } catch (err) {
+      status.classList.add('error');
+      status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(err.message);
+    }
+  });
+})();
+</script>
+<script>
+(function () {
+  const slider = document.getElementById('conc-slider');
+  const output = document.getElementById('conc-output');
+  const current = document.getElementById('conc-current');
+  const status = document.getElementById('conc-status');
+  const form = document.getElementById('conc-form');
+  if (!slider || !form) return;
+  slider.addEventListener('input', () => { output.textContent = slider.value; });
+  slider.addEventListener('change', async () => {
+    status.textContent = 'saving...';
+    const fd = new FormData(form);
+    try {
+      const res = await fetch(form.action, { method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'} });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json().catch(() => ({}));
+      const v = data.value || slider.value;
+      if (current) current.textContent = v;
+      status.innerHTML = plxIcon('i-check') + ' saved (' + plxEsc(v) + ' parallel)';
+      setTimeout(() => { status.textContent = ''; }, 2500);
+    } catch (e) {
+      status.innerHTML = plxIcon('i-x') + ' save failed: ' + plxEsc(e.message);
+    }
+  });
+})();
+</script>
+
+{# ── Master toggles + sources ─────────────────────────────────────── #}
+<section class="card">
+  <h2>What to scan</h2>
+  <form method="post" action="{{ url_for('main.library_autofill_save_toggles') }}" class="stack">
+    <label class="toggle-row big">
+      <input type="checkbox" name="autofill_enabled" {% if autofill_enabled %}checked{% endif %}>
+      <span class="toggle-label">
+        Auto-fill is <strong>{{ 'ON' if autofill_enabled else 'OFF' }}</strong>
+      </span>
+      <span class="muted small">Flip OFF to stop new downloads (already-queued items still complete).</span>
+    </label>
+
+    <fieldset class="source-list">
+      <legend>Sources</legend>
+
+      <label class="toggle-row">
+        <input type="checkbox" name="source_liked" {% if 'liked' in enabled_sources %}checked{% endif %}>
+        <span class="toggle-label">Liked Songs</span>
+        <span class="muted small">Every track you've hearted in Spotify.</span>
+      </label>
+
+      <label class="toggle-row">
+        <input type="checkbox" name="source_followed_artists" {% if 'followed_artists' in enabled_sources %}checked{% endif %} disabled>
+        <span class="toggle-label">Followed Artists <em>(coming soon)</em></span>
+        <span class="muted small">Every album by every artist you follow. High volume — careful with storage.</span>
+      </label>
+
+      {% if spotify_playlists %}
+      <details class="nested-toggle">
+        <summary>Specific playlists ({{ spotify_playlists | length }} available)</summary>
+        <div class="playlist-grid">
+          {% for p in spotify_playlists %}
+          <label class="toggle-row">
+            <input type="checkbox" name="source_playlist" value="{{ p.id }}"
+                   {% if 'playlist:' ~ p.id in enabled_sources %}checked{% endif %}>
+            <span class="toggle-label">{{ p.name }}</span>
+            <span class="muted small">{{ p.track_count }} tracks</span>
+          </label>
+          {% endfor %}
+        </div>
+      </details>
+      {% else %}
+      <p class="muted small">Connect Spotify on the Dashboard to enable per-playlist sources.</p>
+      {% endif %}
+    </fieldset>
+
+    <label class="inline">
+      <span>Scan every</span>
+      <input type="number" name="autofill_interval_minutes" min="5" max="360"
+             value="{{ autofill_interval }}" style="width:5em">
+      <span>min</span>
+    </label>
+
+    <div class="row">
+      <button type="submit" class="btn primary">Save settings</button>
+    </div>
+  </form>
+
+  <div class="row" style="margin-top:1em; gap: 0.8em">
+    <form method="post" action="{{ url_for('main.library_autofill_scan_now') }}" style="display:inline">
+      <button type="submit" class="btn">Scan now</button>
+    </form>
+    <form method="post" action="{{ url_for('main.library_autofill_backfill_plex') }}" style="display:inline"
+          onsubmit="return confirm('Backfill Plex matches for all unmatched Spotify tracks? Can take minutes.')">
+      <button type="submit" class="btn">Backfill Plex matcher</button>
+    </form>
+    <form method="post" action="{{ url_for('main.library_autofill_bulk_retry') }}" style="display:inline"
+          onsubmit="return confirm('Re-attempt every failed/low-confidence album?')">
+      <button type="submit" class="btn">Bulk-retry failed</button>
+    </form>
+    <span class="muted small">Scan = one-off Spotify pull. Bulk-retry = reset failed rows so next tick re-attempts them.</span>
+  </div>
+</section>
+
+{# ── Spotify local cache (AUDIT) ──────────────────────────────────── #}
+<section class="card">
+  <h2>Spotify cache <small class="muted" data-tip="The engine reads Liked Songs from this local copy, not directly from Spotify. Auto-syncs every 6 hours, survives Spotify rate-limits.">(?)</small></h2>
+  <p class="muted small">
+    Engine reads Liked Songs from the local DB so 429 rate-limits don't break ticks.
+    Auto-syncs every 6 hours.
+  </p>
+  <div class="stat-grid" style="margin:0.3em 0">
+    <div><b>{{ spotify_cache_stats.count or 0 }}</b><span class="muted">tracks cached locally</span></div>
+    {% if spotify_cache_stats.last_sync.finished_at %}
+    <div>
+      <b>{{ spotify_cache_stats.last_sync.new or 0 }}/{{ spotify_cache_stats.last_sync.updated or 0 }}/{{ spotify_cache_stats.last_sync.removed or 0 }}</b>
+      <span class="muted">last sync: new/upd/rm</span>
+    </div>
+    <div>
+      <b>{% if spotify_cache_stats.last_sync.aborted_partial %}<span style="color:var(--danger)">partial</span>{% else %}<span style="color:var(--ok)">full</span>{% endif %}</b>
+      <span class="muted">{{ spotify_cache_stats.last_sync.finished_at[:16] }} UTC</span>
+    </div>
+    {% endif %}
+  </div>
+  <form method="post" action="{{ url_for('main.library_autofill_sync_spotify_now') }}" style="display:inline">
+    <button class="btn" type="submit">Sync Spotify now</button>
+  </form>
+  <span class="muted small" style="margin-left:0.5em">Pulls Liked Songs from Spotify into the local cache. Patient on 429 — partial pulls upsert and retry.</span>
+</section>
+
+{# ── Allow CD-quality fallback for stuck albums ──────────────── #}
+<section class="card">
+  <h2>Abandoned-track recovery <small class="muted" data-tip="If hi-res 24-bit/96kHz isn't available anywhere, allow CD-quality (16/44) so the track lands SOMETHING. Affects only rows currently in status=abandoned.">(?)</small></h2>
+  <p class="muted small">
+    {{ total_failed or 0 }} albums are <em>abandoned</em> — they failed many times because no source had a hi-res copy.
+    Toggle this on to let those albums fall back to CD-quality (16/44 FLAC) instead.
+  </p>
+  <form method="post" action="{{ url_for('main.library_autofill_save_allow_cd') }}" class="stack">
+    <label class="toggle-row big">
+      <input type="checkbox" name="autofill_allow_cd_quality"
+             {% if get_config('autofill_allow_cd_quality', '0') == '1' %}checked{% endif %}>
+      <span><strong>Allow CD-quality FLAC for abandoned tracks</strong>
+      <em class="muted">(off by default — keeps hi-res-only standard)</em></span>
+    </label>
+    <button class="btn primary">Save</button>
+    {% if total_failed and total_failed > 0 %}
+    <small class="muted">After enabling, click <strong>Bulk-retry failed</strong> below to re-queue the abandoned rows.</small>
+    {% endif %}
+  </form>
+</section>
+
+{# ── Status / last run (AUDIT-FIXED) ──────────────────────────────── #}
+<section class="card">
+  <h2>Status</h2>
+
+  {# Coverage warning uses whichever value is most current and meaningful #}
+  {% set _cov = last_run.plex_coverage_pct if (last_run.plex_coverage_pct is defined and last_run.plex_coverage_pct > 0) else (last_successful_run.plex_coverage_pct if last_successful_run.plex_coverage_pct is defined else None) %}
+  {% if _cov is not none and _cov < 50 and (last_run.enabled or last_successful_run.enabled) %}
+  <p class="warning">
+    <strong>Plex coverage is {{ _cov }}%.</strong>
+    The Plex matcher (in this app) has only matched {{ _cov }}% of
+    your Spotify tracks against the Plex library. Until that catches up, the
+    autofill may over-recommend albums you actually already have on disk.
+    Tip: open the Dashboard and let Plexify's mirror loops run for a
+    while before flipping autofill ON.
+  </p>
+  {% endif %}
+
+  {% if last_run.source_errors %}
+  <p class="error">
+    <strong>Source errors during last run:</strong>
+    <ul class="small">{% for err in last_run.source_errors %}<li>{{ err }}</li>{% endfor %}</ul>
+    {% set joined = last_run.source_errors | join(' ') %}
+    {% if 'Insufficient client scope' in joined or '403' in joined %}
+      <p>
+        <strong>Likely cause:</strong> the Spotify OAuth token granted before
+        <code>user-library-read</code> was added needs to be re-issued.
+        <a href="{{ url_for('main.spotify_login') }}" class="btn primary small">Reconnect Spotify</a>
+      </p>
+    {% elif '429' in joined %}
+      <p>
+        <strong>Cause:</strong> Spotify rate-limited the API call. The engine
+        will retry on the next tick — no action needed. Numbers below come
+        from the <em>last successful run</em>.
+      </p>
+    {% endif %}
+  </p>
+  {% endif %}
+
+  {# Stat-row fallback: if this run failed, show last successful run #}
+  {% set _r = last_successful_run if (last_run.run_ok == False and last_successful_run.started_at is defined) else last_run %}
+  {% set _from_last_good = (last_run.run_ok == False and last_successful_run.started_at is defined) %}
+
+  <div class="stat-grid">
+    <div>
+      <b>{{ total_queued }}</b>
+      <span class="muted">albums queued for SpotiFLAC</span>
+      {% if total_queued_stale and total_queued_stale > 0 %}
+      <br><small class="muted">({{ total_queued_fresh }} fresh / {{ total_queued_stale }} stuck &gt;24h)</small>
+      {% endif %}
+    </div>
+    <div><b>{{ total_downloading or 0 }}</b><span class="muted">downloading now</span></div>
+    <div>
+      <b>{{ total_imported or 0 }}</b>
+      <span class="muted">imported to /plexify-music</span>
+      <br><small class="muted">(picker + sweep)</small>
+    </div>
+    <div><b>{{ total_library_existing or 0 }}</b><span class="muted">already had (library scan)</span></div>
+    <div><b>{{ total_failed }}</b><span class="muted">abandoned (failed many times)</span></div>
+    {% if total_pending_retry and total_pending_retry > 0 %}
+    <div>
+      <b>{{ total_pending_retry }}</b>
+      <span class="muted">retrying next tick</span>
+      <br><small class="muted">(low conf / 409)</small>
+    </div>
+    {% endif %}
+    {% if _r %}
+    <div>
+      <b>{{ _r.scanned_tracks or 0 }}</b>
+      <span class="muted">tracks scanned{% if _from_last_good %} (last good){% else %} (last run){% endif %}</span>
+    </div>
+    <div>
+      <b>{{ (_r.added_to_lidarr or _r.new_queued or 0) }}</b>
+      <span class="muted">queued for SpotiFLAC{% if _from_last_good %} (last good){% else %} (last run){% endif %}</span>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if last_run.started_at %}
+  <p class="muted small">
+    {% if last_run.run_ok %}
+      <span style="color:var(--ok)">&check;</span> Last run succeeded — started {{ last_run.started_at }} (UTC){% if last_run.finished_at %}, finished {{ last_run.finished_at }}{% endif %}.
+    {% elif last_run.run_ok == False %}
+      <span style="color:var(--danger)">&cross;</span> Last run failed — started {{ last_run.started_at }} (UTC){% if last_run.finished_at %}, finished {{ last_run.finished_at }}{% endif %}.
+      {% if last_successful_run.started_at %}
+      Last <em>successful</em> run was {{ last_successful_run.started_at }}.
+      {% endif %}
+    {% else %}
+      Last run started {{ last_run.started_at }} (UTC){% if last_run.finished_at %}, finished {{ last_run.finished_at }}{% endif %}.
+    {% endif %}
+  </p>
+  {% endif %}
+</section>
+
+{# ── Recent activity ──────────────────────────────────────────────── #}
+<section class="card">
+  <h2>Recent activity</h2>
+  {% if recent_actions %}
+  <table class="data">
+    <thead><tr><th>When</th><th>Artist</th><th>Album</th><th>Status</th><th>Note</th><th>Attempts</th><th></th></tr></thead>
+    <tbody>
+      {% for a in recent_actions %}
+      <tr class="row-{{ a.status }}">
+        <td class="muted small">{{ a.last_attempt_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ a.artist }}</td>
+        <td>{{ a.album }}</td>
+        <td><span class="badge badge-{{ a.status }}">{{ a.status }}</span></td>
+        <td class="muted small">{{ a.note or '' }}</td>
+        <td class="muted">{{ a.attempt_count }}</td>
+        <td>
+          {% if a.status in ('failed','lookup_empty','lookup_low_confidence','abandoned') %}
+          <form method="post" action="{{ url_for('main.library_autofill_retry', action_id=a.id) }}" style="display:inline">
+            <button type="submit" class="btn small">Retry</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No autofill activity yet. Save settings + click <em>Scan now</em> to populate.</p>
+  {% endif %}
+</section>
+{% endblock %}

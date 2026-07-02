@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Jobs — Plexify{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Background jobs</h1>
+  {% if recent_jobs %}
+    <table class="data compact">
+      <thead><tr><th>Started</th><th>Kind</th><th>Title</th><th>Progress</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for j in recent_jobs %}
+        <tr onclick="location.href='{{ url_for('main.job_view', job_id=j.id) }}'" style="cursor:pointer">
+          <td><small>{{ j.started_at[:19] if j.started_at else '—' }}</small></td>
+          <td><small>{{ j.kind }}</small></td>
+          <td>{{ j.title }}</td>
+          <td>
+            {% if j.progress_total %}
+              {{ j.progress_current }} / {{ j.progress_total }}
+            {% else %}—{% endif %}
+          </td>
+          <td><span class="pill {{ 'on' if j.status == 'ok' else ('off' if j.status == 'error' else '') }}">{{ j.status }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No jobs yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

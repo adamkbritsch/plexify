@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Unmatched — Plexify{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="row between">
+    <h1>Unmatched tracks</h1>
+<div style="margin: 1em 0">
+  <input id="unmatched-search" type="search" placeholder="Filter by artist, title, or album…"
+         style="width: 100%; max-width: 480px; padding: 0.4em 0.6em;
+                background: rgba(255,255,255,0.04); color: var(--fg);
+                border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;">
+  <span class="muted small" id="unmatched-count" style="margin-left: 1em"></span>
+</div>
+<script>
+(function(){
+  const inp = document.getElementById('unmatched-search');
+  const count = document.getElementById('unmatched-count');
+  function apply(){
+    const q = inp.value.toLowerCase().trim();
+    const rows = document.querySelectorAll('table.data tbody tr');
+    let shown = 0;
+    rows.forEach(r => {
+      const text = r.innerText.toLowerCase();
+      const show = !q || text.includes(q);
+      r.style.display = show ? '' : 'none';
+      if (show) shown++;
+    });
+    count.textContent = q ? `Showing ${shown} of ${rows.length}` : '';
+  }
+  inp.addEventListener('input', apply);
+})();
+</script>
+
+    {% if rows %}
+      <form method="post" action="{{ url_for('main.clear_unmatched') }}">
+        <button class="btn ghost small"
+                onclick="return confirm('Clear the unmatched log? These tracks will be re-tried on next sync.')">
+          Clear log
+        </button>
+      </form>
+    {% endif %}
+  </div>
+  <p class="muted">Tracks that couldn't be found on the other service. Common causes: regional unavailability, remixes only on one side, exclusive releases.</p>
+  {% if total and total > shown %}
+    <p class="muted"><small>Showing {{ shown }} of {{ total }} (oldest entries truncated for performance).</small></p>
+  {% endif %}
+
+  {% if rows %}
+    <table class="data">
+      <thead>
+        <tr><th>Direction</th><th>Title</th><th>Artist</th><th>ISRC</th><th>Reason</th><th>Last seen</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+          <tr>
+            <td><small>{{ r.source_service }} → {{ r.target_service }}</small></td>
+            <td>{{ r.title }}</td>
+            <td>{{ r.artist }}</td>
+            <td><code>{{ r.isrc or '—' }}</code></td>
+            <td>{{ r.reason }}</td>
+            <td><small>{{ r.last_seen_at|dt }}</small></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Nothing unmatched. Either nothing's failed, or the log was cleared.</p>
+  {% endif %}
+</section>
+{% endblock %}

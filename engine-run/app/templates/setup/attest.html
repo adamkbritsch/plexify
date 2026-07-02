@@ -1,0 +1,19 @@
+<h1>Agreement</h1>
+<p class="muted">Plexify can acquire music from peer-to-peer and mirror sources. Before it downloads anything, please confirm you'll use it legally.</p>
+<form id="stepform" method="post" action="{{ url_for('main.setup_attest') }}" class="form">
+  <label class="row gap" style="align-items:flex-start; gap:10px">
+    <input type="checkbox" id="agree" name="agree" value="1"
+           onchange="document.getElementById('attestbtn').disabled = !this.checked">
+    <span>I confirm that I own, or otherwise have the legal right to, the music I download with
+    Plexify, and that I will use it in compliance with applicable law and the terms of each
+    service I connect.</span>
+  </label>
+  <p class="muted small">Plexify is a personal library tool — you are responsible for how you use it.
+  Downloading stays blocked until this box is checked.</p>
+</form>
+<div class="wiz-foot">
+  <a href="{{ url_for('main.setup', step='sources') }}" class="btn ghost">&larr; Back</a>
+  <span class="wiz-foot-r">
+    <button type="submit" form="stepform" id="attestbtn" class="btn primary" disabled>I agree &amp; continue &rarr;</button>
+  </span>
+</div>

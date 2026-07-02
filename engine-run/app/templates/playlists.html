@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% block title %}Playlists — Plexify{% endblock %}
+{% block content %}
+
+<section class="card">
+  <h1 style="margin-bottom:8px">Your Spotify playlists</h1>
+  <p class="muted">
+    Every playlist you own on Spotify is auto-backed up as soon as Spotify is connected. The compile runs in the background and resumes after restarts — no buttons to click.
+    Live progress is on the <a href="{{ url_for('main.dashboard') }}">dashboard</a> and <a href="{{ url_for('main.jobs_view') }}">jobs page</a>.
+    Enable Plex/Plex mirroring per-playlist from the dashboard toggles.
+  </p>
+  {% if spotify_error %}
+  <div class="flash error">
+    <strong>Couldn't load Spotify playlists right now.</strong> {{ spotify_error }} The auto-discover retries every 5 min, so this will recover on its own.
+  </div>
+  {% endif %}
+  <div class="flash warning" style="margin-top:8px">
+    <strong>Playlists you don't own can't be compiled.</strong> Since early 2025, Spotify blocks
+    third-party apps from reading the contents of <em>any</em> playlist your account doesn't own —
+    playlists you merely <em>follow</em> as well as algorithmic ones (Daily Mix, Discover Weekly,
+    Wrapped…) — so only playlists you own are listed here at all.<br>
+    <strong>Workaround:</strong> in the Spotify app, select all tracks of a followed playlist and add
+    them to a playlist you own — that copy backs up and syncs like any other.
+  </div>
+  <form method="post" action="{{ url_for('main.recompile_all_playlists') }}" data-async="true" style="margin-top:12px">
+    <button class="btn" data-sync-trigger title="Reorder every Plex playlist to match Spotify (intensive — also runs automatically nightly at 4am)">↕ Recompile all Plex playlist orders</button>
+    <span class="muted small" style="margin-left:8px">Re-sorts every Plex playlist into its Spotify order. Intensive — also runs nightly at 4am.</span>
+  </form>
+</section>
+
+<section class="card">
+  <h2 class="section-title">Discovered playlists</h2>
+
+  <div class="lib-toolbar" style="margin-bottom:8px">
+    <div class="lib-filters" id="pl-filters">
+      <button type="button" class="lib-filter active" data-own="all">All</button>
+      <button type="button" class="lib-filter" data-own="mirrored">Mirrored</button>
+      <button type="button" class="lib-filter" data-own="unmirrored">Not mirrored</button>
+    </div>
+    <div class="lib-selects">
+      <select id="pl-list-sort" title="Sort the playlist list">
+        <option value="library">Spotify order</option>
+        <option value="name">Name A–Z</option>
+        <option value="tracks">Most tracks</option>
+        <option value="mirrored">Mirrored first</option>
+      </select>
+    </div>
+    <span class="lib-count muted small" id="pl-count"></span>
+  </div>
+  <input type="text" id="playlist-search" placeholder="Search playlists…" class="search-input">
+  <ul class="playlist-list" id="playlist-list">
+    {% for p in spotify_playlists %}
+      {% set existing_pair = pair_by_spotify.get(p.id) %}
+      <li class="playlist-row {{ 'mirrored' if existing_pair else '' }}"
+          data-search="{{ p.name|lower }} {{ p.owner|lower }}"
+          data-owned="{{ '1' if p.owned else '0' }}"
+          data-mirrored="{{ '1' if existing_pair else '0' }}"
+          data-tracks="{{ p.track_count if p.track_count >= 0 else 0 }}"
+          data-name="{{ p.name|lower }}"
+          data-idx="{{ loop.index }}">
+        <div class="playlist-meta">
+          <span class="dot sp"></span>
+          {% if existing_pair and existing_pair.plex_enabled and existing_pair.plex_playlist_key %}
+          <a href="{{ url_for('main.api_playlist_go', pair_id=existing_pair.id) }}" target="_blank" rel="noopener" class="playlist-link" title="Open this playlist in Plex"><strong>{{ p.name }}</strong></a>
+          {% else %}
+          <strong>{{ p.name }}</strong>
+          {% endif %}
+          {% if p.track_count >= 0 %}<small class="muted">({{ p.track_count }} tracks)</small>{% endif %}
+
+          {% if existing_pair %}
+            <span class="badge mirrored-badge">mirrored</span>
+          {% endif %}
+        </div>
+        {% if existing_pair %}
+          <div class="playlist-actions">
+            {# Compact compile-status indicator #}
+            {% if existing_pair.compile_status == 'complete' %}
+              <span class="badge mirrored-badge"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-check"></use></svg> backed up</span>
+            {% elif existing_pair.compile_status == 'compiling' %}
+              <span class="badge plex-pending">compiling {{ existing_pair.compile_offset }}/{{ existing_pair.compile_total or '?' }}</span>
+            {% elif existing_pair.compile_status == 'forbidden' %}
+              <span class="badge" style="opacity:0.5">algorithmic — can't compile</span>
+            {% elif existing_pair.compile_status == 'unavailable' %}
+              <span class="badge" style="opacity:0.5">not on Spotify</span>
+            {% else %}
+              <span class="badge" style="opacity:0.6">pending</span>
+            {% endif %}
+
+            {# Destination toggles — same pattern as dashboard. Click to flip. #}
+            <form method="post" action="{{ url_for('main.toggle_destination', pair_id=existing_pair.id, service='plex') }}" data-async="true" style="display:inline">
+              <input type="hidden" name="action" value="{{ 'disable' if existing_pair.plex_enabled else 'enable' }}">
+              <button type="submit" class="badge {{ 'plex' if existing_pair.plex_enabled else '' }}" data-sync-trigger
+                      style="border:none;cursor:pointer;{% if not existing_pair.plex_enabled %}opacity:0.5{% endif %}"
+                      title="{{ 'Click to disable Plex mirror' if existing_pair.plex_enabled else 'Click to enable Plex (FLAC) mirror' }}">
+                <span class="dot plex"></span> Plex{% if existing_pair.plex_enabled %} <svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-check"></use></svg>{% endif %}{% if existing_pair.plex_enabled and not existing_pair.plex_playlist_key %} (creating){% endif %}
+              </button>
+            </form>
+
+            <form method="post" action="{{ url_for('main.manual_sync', pair_id=existing_pair.id) }}" data-async="true" style="display:inline">
+              <button class="btn small" data-sync-trigger title="Force a sync now">Sync now</button>
+            </form>
+            {% if existing_pair.plex_enabled and existing_pair.plex_playlist_key %}
+            <form method="post" action="{{ url_for('main.rebuild_pair', pair_id=existing_pair.id) }}" data-async="true" style="display:inline">
+              <input type="hidden" name="rebuild_plex" value="1">
+              <input type="hidden" name="use_live" value="0">
+              <button class="btn small" data-sync-trigger title="Rebuild this Plex playlist in Spotify's order (from the local cache)">↕ Recompile order</button>
+            </form>
+            {% set _sm = existing_pair.sort_mode or ('recent' if existing_pair.reverse_order else 'source') %}
+            {% set _labels = {'source':'Date added','recent':'Recently added','title':'Title','artist':'Artist','album':'Album'} %}
+            <div class="pl-sort" data-pair-id="{{ existing_pair.id }}">
+              <button type="button" class="btn small pl-sort-btn" aria-haspopup="true" aria-expanded="false" title="Sort this Plex playlist">
+                <span class="pl-sort-ico" aria-hidden="true">↕</span> <span class="pl-sort-cur">{{ _labels.get(_sm, 'Date added') }}</span> <span class="pl-sort-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="pl-sort-menu" role="menu" hidden>
+                <div class="pl-sort-head">Sort by</div>
+                {% for m, lbl in [('recent','Recently added'),('source','Date added'),('title','Title'),('artist','Artist'),('album','Album')] %}
+                <button type="button" role="menuitemradio" aria-checked="{{ 'true' if _sm == m else 'false' }}" class="pl-sort-opt {{ 'active' if _sm == m else '' }}" data-mode="{{ m }}">
+                  <span>{{ lbl }}</span>{% if _sm == m %}<span class="pl-sort-check"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-check"></use></svg></span>{% endif %}
+                </button>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="pl-zip" data-pair-id="{{ existing_pair.id }}" style="display:inline-flex;align-items:center;gap:8px;vertical-align:middle">
+              <button type="button" class="btn small pl-zip-btn" title="Bundle this playlist's FLAC files into a downloadable .zip"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-archive"></use></svg> Compile Zip Archive</button>
+              <span class="pl-zip-status" aria-live="polite"></span>
+            </div>
+            {% endif %}
+          </div>
+          <details class="playlist-preview" data-pair-id="{{ existing_pair.id }}">
+            <summary class="playlist-preview-summary">
+              <span class="chevron">▶</span> View tracks
+            </summary>
+            <div class="playlist-preview-body">
+              <div class="preview-loading">Loading tracks…</div>
+            </div>
+          </details>
+        {% else %}
+          <span class="badge" style="opacity:0.6">queued — auto-discover will pick this up</span>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<script>
+(function() {
+  // Filter (Mine default — followed playlists can flood the list), sort, search.
+  const search = document.getElementById('playlist-search');
+  const list = document.getElementById('playlist-list');
+  const filters = document.getElementById('pl-filters');
+  const sortSel = document.getElementById('pl-list-sort');
+  const count = document.getElementById('pl-count');
+  if (!list) return;
+  let own = 'all', q = '';
+  function apply() {
+    const rows = [...list.children];
+    // sort
+    const mode = sortSel ? sortSel.value : 'library';
+    rows.sort((a, b) => {
+      if (mode === 'name') return (a.dataset.name || '').localeCompare(b.dataset.name || '');
+      if (mode === 'tracks') return (+b.dataset.tracks || 0) - (+a.dataset.tracks || 0);
+      if (mode === 'mirrored') return (+b.dataset.mirrored || 0) - (+a.dataset.mirrored || 0)
+        || (a.dataset.name || '').localeCompare(b.dataset.name || '');
+      return (+a.dataset.idx || 0) - (+b.dataset.idx || 0);
+    });
+    rows.forEach(r => list.appendChild(r));
+    // filter
+    let shown = 0;
+    for (const li of rows) {
+      const okOwn = own === 'all' ? true
+        : own === 'mirrored' ? li.dataset.mirrored === '1'
+        : li.dataset.mirrored !== '1';
+      const okQ = !q || (li.dataset.search || '').includes(q);
+      const show = okOwn && okQ;
+      li.style.display = show ? '' : 'none';
+      if (show) shown++;
+    }
+    if (count) count.textContent = shown + ' shown';
+  }
+  if (search) search.addEventListener('input', () => { q = search.value.trim().toLowerCase(); apply(); });
+  if (filters) filters.addEventListener('click', (e) => {
+    const b = e.target.closest('.lib-filter'); if (!b) return;
+    filters.querySelectorAll('.lib-filter').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    own = b.dataset.own;
+    apply();
+  });
+  if (sortSel) sortSel.addEventListener('change', apply);
+  apply();
+})();
+</script>
+<script src="{{ url_for('static', filename='playlist-preview.js') }}?v=2"></script>
+<script>
+// Per-playlist sort dropdown (Spotify-style). Open/close, pick a mode → recompile Plex.
+(function () {
+  var LABELS = { recent: 'Recently added', source: 'Date added', title: 'Title', artist: 'Artist', album: 'Album' };
+  function closeAll(except) {
+    document.querySelectorAll('.pl-sort-menu').forEach(function (m) { if (m !== except) { m.hidden = true; } });
+    document.querySelectorAll('.pl-sort-btn[aria-expanded="true"]').forEach(function (b) { if (!except || b.parentElement.querySelector('.pl-sort-menu') !== except) b.setAttribute('aria-expanded', 'false'); });
+  }
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.pl-sort-btn');
+    if (btn) {
+      e.stopPropagation();
+      var menu = btn.parentElement.querySelector('.pl-sort-menu');
+      var willOpen = menu.hidden;
+      closeAll(willOpen ? menu : null);
+      menu.hidden = !willOpen;
+      btn.setAttribute('aria-expanded', String(willOpen));
+      return;
+    }
+    var opt = e.target.closest('.pl-sort-opt');
+    if (opt) {
+      e.preventDefault();
+      var wrap = opt.closest('.pl-sort');
+      var pid = wrap.getAttribute('data-pair-id');
+      var mode = opt.getAttribute('data-mode');
+      opt.closest('.pl-sort-menu').hidden = true;
+      // optimistic UI
+      wrap.querySelectorAll('.pl-sort-opt').forEach(function (o) {
+        o.classList.remove('active'); o.setAttribute('aria-checked', 'false');
+        var c = o.querySelector('.pl-sort-check'); if (c) c.remove();
+      });
+      opt.classList.add('active'); opt.setAttribute('aria-checked', 'true');
+      opt.insertAdjacentHTML('beforeend', '<span class="pl-sort-check"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-check"></use></svg></span>');
+      var cur = wrap.querySelector('.pl-sort-cur'); if (cur) cur.textContent = LABELS[mode] || mode;
+      var b = wrap.querySelector('.pl-sort-btn'); if (b) b.setAttribute('aria-expanded', 'false');
+      fetch('/playlists/pair/' + pid + '/sort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' },
+        body: 'mode=' + encodeURIComponent(mode)
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (d && d.job_id && window.PlexifyTrackJob) window.PlexifyTrackJob(d.job_id);
+      }).catch(function () {});
+      return;
+    }
+    closeAll(null);
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAll(null); });
+})();
+</script>
+<style>
+  .pl-zip-status { font-size: 12px; color: var(--muted, #8a8a8a); }
+  .pl-zip-go { color: var(--accent, #f5b301); font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .pl-zip-go:hover { text-decoration: underline; }
+  .pl-zip-btn[disabled] { opacity: 0.6; }
+  .pl-zip-path { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; color: var(--accent, #f5b301);
+                 background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px; user-select: all; word-break: break-all; }
+  .pl-zip-status { display: inline-block; max-width: 520px; }
+</style>
+<script>
+// Per-playlist ZIP: build the archive into a NAS folder, then show its path.
+(function () {
+  var timers = {};
+  function render(wrap, d) {
+    var st = wrap.querySelector('.pl-zip-status');
+    var btn = wrap.querySelector('.pl-zip-btn');
+    if (!d || d.state === 'idle') { st.textContent = ''; if (btn) btn.disabled = false; return; }
+    if (d.state === 'building') {
+      st.textContent = 'Compiling\u2026' + (d.total ? (' ' + (d.done || 0) + '/' + d.total) : '');
+    } else if (d.state === 'done') {
+      var sz = d.size_gb ? (' (' + d.size_gb + ' GB)') : '';
+      st.innerHTML = '\u2713 Ready on the NAS' + sz + ' \u2014 grab it within 15 min (auto-deletes after the download or when it expires):<br><code class="pl-zip-path">' + (d.host_path || d.path || '') + '</code>';
+      if (btn) btn.disabled = false;
+    } else if (d.state === 'downloaded') {
+      st.textContent = '\u2713 Downloaded \u2014 removed from the NAS.'; if (btn) btn.disabled = false;
+    } else if (d.state === 'expired') {
+      st.textContent = 'Expired (not downloaded within 15 min) \u2014 press to re-compile.'; if (btn) btn.disabled = false;
+    } else {
+      st.textContent = '\u26A0 ' + (d.error || 'failed'); if (btn) btn.disabled = false;
+    }
+  }
+  function poll(pid, wrap) {
+    fetch('/api/playlists/' + pid + '/zip-status').then(function (r) { return r.json(); }).then(function (d) {
+      render(wrap, d);
+      if (d && (d.state === 'building' || d.state === 'done')) { timers[pid] = setTimeout(function () { poll(pid, wrap); }, d.state === 'done' ? 4000 : 1500); }
+    }).catch(function () {});
+  }
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.pl-zip-btn');
+    if (!btn) return;
+    var wrap = btn.closest('.pl-zip'); var pid = wrap.getAttribute('data-pair-id');
+    btn.disabled = true; wrap.querySelector('.pl-zip-status').textContent = 'Starting\u2026';
+    fetch('/api/playlists/' + pid + '/zip-build', { method: 'POST', headers: { 'X-Requested-With': 'fetch' } })
+      .then(function (r) { return r.json(); }).then(function () { poll(pid, wrap); })
+      .catch(function () { btn.disabled = false; wrap.querySelector('.pl-zip-status').textContent = 'Error.'; });
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,9 @@
+<h1>Music library path</h1>
+<p class="muted">The path <strong>your Plex server</strong> sees for the Plexify music folder — the container path you mapped the <code>plexify-music</code> folder to in your Plex mounts. With <code>-v /volume3/MediaVolume3/plexify-music:/media/vol3/Music</code>, this is <code>/media/vol3/Music</code>. Plexify uses it to map acquired FLACs to where Plex indexes them.</p>
+<form id="stepform" method="post" action="{{ url_for('main.setup_library') }}" class="form">
+  <label>Plex-visible music path <input type="text" name="library_path" value="{{ library_path }}" placeholder="/media/vol3/Music" autocomplete="off"></label>
+</form>
+<div class="wiz-foot">
+  <a href="{{ url_for('main.setup', step='lidarr') }}" class="btn ghost">← Back</a>
+  <span class="wiz-foot-r"><form method="post" action="{{ url_for('main.setup_skip', step='library') }}" class="inl"><button class="wiz-skip">Skip for now</button></form><button type="submit" form="stepform" class="btn primary">Save &amp; continue →</button></span>
+</div>

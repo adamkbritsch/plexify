@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — Plexify{% endblock %}
+{% block content %}
+<section class="card" id="job-card" data-job-id="{{ job.id }}">
+  <div class="row between">
+    <div>
+      <h1 style="margin-bottom:4px">{{ job.title }}</h1>
+      <small class="muted">Job #{{ job.id }} · {{ job.kind }} · started {{ job.started_at }}</small>
+    </div>
+    <span class="pill" id="job-status">{{ job.status }}</span>
+  </div>
+
+  <div class="progress-wrap" style="margin-top:18px">
+    <div class="progress-track">
+      <div class="progress-bar" id="job-progress-bar"
+           style="width: {{ (100 * job.progress_current / job.progress_total) if job.progress_total else 0 }}%"></div>
+    </div>
+    <div class="row between" style="margin-top:6px">
+      <small class="muted" id="job-step">{{ job.progress_step or '—' }}</small>
+      <small class="muted" id="job-counts">
+        {% if job.progress_total %}{{ job.progress_current }} / {{ job.progress_total }}{% endif %}
+      </small>
+    </div>
+  </div>
+
+  {% if job.message %}<p class="muted" id="job-message" style="margin-top:14px">{{ job.message }}</p>{% else %}<p class="muted" id="job-message" hidden></p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Live log</h2>
+  <pre id="job-log" class="log">{% for e in job.events %}{{ e.ts[:19] }}  [{{ e.level }}]  {{ e.message }}
+{% endfor %}</pre>
+</section>
+
+<section class="card" id="job-result-card" {% if not job.result %}hidden{% endif %}>
+  <h2>Result</h2>
+  <pre id="job-result" class="log">{{ job.result | tojson(indent=2) if job.result else '' }}</pre>
+  <a href="{{ url_for('main.dashboard') }}" class="btn">Back to dashboard</a>
+</section>
+
+<script>
+(function() {
+  const card = document.getElementById('job-card');
+  const jobId = card.dataset.jobId;
+  let lastEventId = {{ job.events[-1].id if job.events else 0 }};
+  let isDone = {{ 'true' if job.status in ['ok', 'error', 'partial'] else 'false' }};
+
+  const $ = id => document.getElementById(id);
+
+  function appendLog(events) {
+    const log = $('job-log');
+    let chunk = '';
+    for (const e of events) {
+      const ts = (e.ts || '').slice(0, 19);
+      chunk += `${ts}  [${e.level}]  ${e.message}\n`;
+      lastEventId = Math.max(lastEventId, e.id);
+    }
+    if (chunk) {
+      log.textContent += chunk;
+      log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  async function poll() {
+    if (isDone) return;
+    try {
+      const r = await fetch(`/api/jobs/${jobId}?after=${lastEventId}`);
+      if (!r.ok) throw new Error(r.statusText);
+      const j = await r.json();
+
+      $('job-status').textContent = j.status;
+      $('job-status').className = 'pill ' + (j.status === 'ok' ? 'on' : (j.status === 'error' ? 'off' : ''));
+      $('job-step').textContent = j.progress_step || '—';
+      if (j.progress_total > 0) {
+        const pct = Math.min(100, 100 * j.progress_current / j.progress_total);
+        $('job-progress-bar').style.width = pct + '%';
+        $('job-counts').textContent = `${j.progress_current} / ${j.progress_total}`;
+      } else if (j.status === 'ok' || j.status === 'partial') {
+        $('job-progress-bar').style.width = '100%';
+      }
+      if (j.message) {
+        const m = $('job-message');
+        m.textContent = j.message;
+        m.hidden = false;
+      }
+      appendLog(j.events || []);
+
+      if (['ok', 'error', 'partial'].includes(j.status)) {
+        isDone = true;
+        if (j.result) {
+          $('job-result').textContent = JSON.stringify(j.result, null, 2);
+          $('job-result-card').hidden = false;
+        }
+        if (window.PlexifyNotify) {
+          window.PlexifyNotify(`${j.title}: ${j.status}`, j.message || '');
+        }
+        return;
+      }
+    } catch (e) {
+      console.warn('poll failed', e);
+    }
+    setTimeout(poll, 1500);
+  }
+  setTimeout(poll, 700);
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Library — Plexify{% endblock %}
+{% block content %}
+<section class="card">
+  <h1 style="margin-bottom:8px">Library</h1>
+  <p class="muted">Everything Plexify has placed in your Plex music library. Organize it like Plex, and condense it on demand.</p>
+</section>
+<section class="card">
+  <div class="lib-plexbar">
+    <div class="lib-plexbar-l">
+      <div class="lib-dd" data-dd="filter">
+        <button type="button" class="lib-dd-btn"><span class="lib-dd-cur">All</span> <span class="lib-dd-caret">&#9662;</span></button>
+        <div class="lib-dd-menu" role="menu" hidden>
+          <button type="button" class="lib-dd-opt active" data-val="all">All</button>
+          <button type="button" class="lib-dd-opt" data-val="completed">Completed</button>
+          <button type="button" class="lib-dd-opt" data-val="incomplete">Incomplete</button>
+          <button type="button" class="lib-dd-opt" data-val="locked">Locked</button>
+        </div>
+      </div>
+      <div class="lib-dd" data-dd="type">
+        <button type="button" class="lib-dd-btn"><span class="lib-dd-cur">Albums</span> <span class="lib-dd-caret">&#9662;</span></button>
+        <div class="lib-dd-menu" role="menu" hidden>
+          <button type="button" class="lib-dd-opt" data-val="artists">Artists</button>
+          <button type="button" class="lib-dd-opt" data-val="songs">Songs</button>
+          <button type="button" class="lib-dd-opt active" data-val="albums">Albums</button>
+        </div>
+      </div>
+      <div class="lib-dd" data-dd="sort">
+        <button type="button" class="lib-dd-btn"><span class="lib-dd-cur">Recently added</span> <span class="lib-dd-caret">&#9662;</span></button>
+        <div class="lib-dd-menu" role="menu" hidden>
+          <button type="button" class="lib-dd-opt active" data-val="recent">Recently added</button>
+          <button type="button" class="lib-dd-opt" data-val="album">Title</button>
+          <button type="button" class="lib-dd-opt" data-val="artist">Artist</button>
+          <button type="button" class="lib-dd-opt" data-val="largest">Most tracks</button>
+          <button type="button" class="lib-dd-opt" data-val="missing">Fewest missing</button>
+        </div>
+      </div>
+      <span class="lib-count muted small" id="lib-count"></span>
+    </div>
+    <div class="lib-plexbar-r">
+      <button type="button" id="lib-condense" class="lib-condense-btn" title="Run the album rulebook now — combine by cover art, merge same-album variants, drop duplicate songs, split oversized albums, and reconcile the Plex tiles.">
+        <svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-archive"></use></svg> Condense Library
+      </button>
+    </div>
+  </div>
+  <div id="lib-condense-msg" class="lib-complete-msg" hidden></div>
+  <input type="search" id="lib-search" class="search-input" placeholder="Search&#8230;" autocomplete="off" spellcheck="false">
+  <div id="lib-grid" class="lib-grid"><div class="feed-empty">Loading&#8230;</div></div>
+  <div id="lib-more-wrap"></div>
+  <div id="lib-detail" hidden></div>
+</section>
+<script src="{{ url_for('static', filename='library.js') }}?v=18"></script>
+{% endblock %}

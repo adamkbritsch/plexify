@@ -1,0 +1,40 @@
+# ── Secrets & runtime data ─────────────────────────────────────────
+# The SQLite DB holds ALL credentials (Plex token, Spotify id/secret, slskd/
+# Telegram/Qobuz keys, OAuth tokens) + your entire Spotify library. NEVER commit it.
+data/
+downloader-data/
+*.db
+*.db-wal
+*.db-shm
+.secret_key
+.env
+~/.topaz-pipeline/
+
+# ── Python ─────────────────────────────────────────────────────────
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── Logs ───────────────────────────────────────────────────────────
+*.log
+
+# ── Build artifacts ────────────────────────────────────────────────
+Plexify.app/
+*.tar.gz
+
+# ── macOS / editors ────────────────────────────────────────────────
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ── Duplicate pristine engine copy (engine-run/ is the canonical, published engine) ──
+engine/
+
+# Stale standalone daemon copy (canonical is engine-run/downloader_daemon.py)
+downloader/

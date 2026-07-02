@@ -1,0 +1,27 @@
+<h1>Connect your Plex server</h1>
+<p class="muted">Plexify mirrors your playlists into a Plex music playlist of matching lossless files. Detect your server, paste a token, and pick the music library.</p>
+{% if health.connected %}<p class="pill on">connected{% if health.music_section %} — {{ health.music_section }} ({{ health.track_count }} tracks){% endif %}</p>{% else %}<p class="pill off">not connected</p>{% endif %}
+<div class="row gap" style="margin:8px 0"><button type="button" id="detect-plex" class="btn">Detect Plex on this NAS</button> <span id="detect-result" class="muted small"></span></div>
+<form id="stepform" method="post" action="{{ url_for('main.setup_plex') }}" class="form">
+  <label>Plex URL <input type="text" id="plex-url" name="plex_url" value="{{ plex_url }}" placeholder="http://&lt;your-plex-host&gt;:32400" required></label>
+  <label>Plex token <input type="password" name="plex_token" value="{{ plex_token }}" required autocomplete="off"></label>
+  <details class="help-block"><summary>How to find your Plex token</summary>
+    <ol class="steps" style="margin-top:10px"><li>Open any track in Plex web → <strong>… → Get Info → View XML</strong>. In the new tab's address bar, copy the value after <code>X-Plex-Token=</code> up to the next <code>&amp;</code>.</li></ol>
+  </details>
+  {% if sections %}<label>Music library <select name="plex_music_section_key">{% for s in sections %}<option value="{{ s.key }}" {% if s.key == plex_section_key %}selected{% endif %}>{{ s.title }}</option>{% endfor %}</select></label>{% else %}<p class="muted small">The music library list appears after you save + test.</p>{% endif %}
+</form>
+<div class="wiz-foot">
+  <a href="{{ url_for('main.setup', step='spotify') }}" class="btn ghost">← Back</a>
+  <span class="wiz-foot-r">{% if health.connected %}<a href="{{ url_for('main.setup', step='soulseek') }}" class="btn">Continue →</a>{% endif %}<button type="submit" form="stepform" class="btn primary">Save &amp; test</button></span>
+</div>
+<script>
+document.getElementById('detect-plex').addEventListener('click',function(){
+  var o=document.getElementById('detect-result');o.textContent='Scanning…';
+  fetch('/api/setup/detect-plex').then(r=>r.json()).then(d=>{
+    var s=d.servers||[];
+    if(!s.length){o.innerHTML='No Plex found on this NAS. <a href="https://docs.linuxserver.io/images/docker-plex/" target="_blank" rel="noopener">Create one →</a>';return;}
+    if(s.length===1){document.getElementById('plex-url').value=s[0].url;o.textContent='Found '+s[0].url+' (v'+(s[0].version||'?')+').';}
+    else{o.innerHTML='Found: '+s.map(x=>'<a href="#" class="pick-plex" data-u="'+x.url+'">'+x.url+'</a>').join(' · ');document.querySelectorAll('.pick-plex').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();document.getElementById('plex-url').value=a.dataset.u;o.textContent='Selected '+a.dataset.u;}));}
+  }).catch(()=>{o.textContent='Detection failed.';});
+});
+</script>

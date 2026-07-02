@@ -1,0 +1,30 @@
+<h1>Lidarr</h1>
+<p class="muted">Plexify's own isolated Lidarr instance, used to organize and fetch albums. Points at Plexify's own container.</p>
+<div class="inl" style="margin:6px 0 14px">
+  <button type="button" class="btn ghost" id="lidarr-auto">Connect bundled Lidarr automatically</button>
+  <span id="lidarr-auto-msg" class="muted"></span>
+</div>
+<form id="stepform" method="post" action="{{ url_for('main.setup_lidarr') }}" class="form">
+  <label>Lidarr URL <input type="text" name="lidarr_url" value="{{ lidarr_url }}"></label>
+  <label>Lidarr API key <input type="password" name="lidarr_api_key" value="{{ lidarr_api_key }}" autocomplete="off"></label>
+</form>
+<div class="wiz-foot">
+  <a href="{{ url_for('main.setup', step='soulseek') }}" class="btn ghost">← Back</a>
+  <span class="wiz-foot-r"><form method="post" action="{{ url_for('main.setup_skip', step='lidarr') }}" class="inl"><button class="wiz-skip">Skip for now</button></form><button type="submit" form="stepform" class="btn primary">Save &amp; continue →</button></span>
+</div>
+<script>
+(function(){
+  var b=document.getElementById('lidarr-auto'), m=document.getElementById('lidarr-auto-msg');
+  b.addEventListener('click', function(){
+    m.textContent='Connecting...'; b.disabled=true;
+    fetch('{{ url_for("main.api_setup_lidarr_autowire") }}', {method:'POST'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        b.disabled=false;
+        if(d.ok){ m.textContent='Connected to Lidarr '+(d.version||'')+' (root '+(d.root_folder||'')+': '+(d.root_status||'')+')'; }
+        else { m.textContent=(d.error||'Failed'); }
+      })
+      .catch(function(e){ b.disabled=false; m.textContent='Error: '+e; });
+  });
+})();
+</script>

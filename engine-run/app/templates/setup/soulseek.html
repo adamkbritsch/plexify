@@ -1,0 +1,27 @@
+<h1>Soulseek (slskd)</h1>
+<p class="muted">Plexify's own bundled slskd container downloads FLACs from Soulseek. Points at Plexify's own container.</p>
+<form id="stepform" method="post" action="{{ url_for('main.setup_soulseek') }}" class="form">
+  <label>slskd URL <input type="text" name="slskd_url" value="{{ slskd_url }}"></label>
+  <label>slskd API key <input type="password" name="slskd_api_key" value="{{ slskd_api_key }}" autocomplete="off"></label>
+</form>
+<div class="inl" style="margin:6px 0 14px">
+  <button type="button" class="btn ghost" id="slskd-test">Test connection</button>
+  <span id="slskd-test-msg" class="muted"></span>
+</div>
+<div class="wiz-foot">
+  <a href="{{ url_for('main.setup', step='plex') }}" class="btn ghost">← Back</a>
+  <span class="wiz-foot-r"><form method="post" action="{{ url_for('main.setup_skip', step='soulseek') }}" class="inl"><button class="wiz-skip">Skip for now</button></form><button type="submit" form="stepform" class="btn primary">Save &amp; continue →</button></span>
+</div>
+<script>
+(function(){
+  var b=document.getElementById('slskd-test'), m=document.getElementById('slskd-test-msg');
+  b.addEventListener('click', function(){
+    m.textContent='Testing...';
+    var u=document.querySelector('[name=slskd_url]').value, k=document.querySelector('[name=slskd_api_key]').value;
+    fetch('{{ url_for("main.api_setup_test_slskd") }}', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({slskd_url:u, slskd_api_key:k})})
+      .then(function(r){return r.json();})
+      .then(function(d){ m.textContent = d.ok ? 'Connected to slskd.' : ('Failed: '+(d.error||'unreachable')); })
+      .catch(function(e){ m.textContent='Error: '+e; });
+  });
+})();
+</script>

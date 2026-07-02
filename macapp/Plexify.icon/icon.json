@@ -1,0 +1,53 @@
+{
+  "fill" : {
+    "solid" : "display-p3:0.09778,0.09790,0.09772,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "display-p3:0.41187,0.85107,0.45093,1.00000",
+              "display-p3:0.23926,0.48633,0.27051,1.00000"
+            ],
+            "orientation" : {
+              "start" : {
+                "x" : 0.5000000000000002,
+                "y" : -0.10522749686211229
+              },
+              "stop" : {
+                "x" : 0.5000000000000002,
+                "y" : 1.1259848671627517
+              }
+            }
+          },
+          "glass" : false,
+          "image-name" : "Asset 1.svg",
+          "name" : "Asset 1",
+          "position" : {
+            "scale" : 3.34,
+            "translation-in-points" : [
+              19,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

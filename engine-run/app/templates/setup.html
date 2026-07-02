@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Setup — Plexify{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>One-time Spotify setup</h1>
+  <p>
+    Spotify requires a developer app to use its API. This is free and takes 30 seconds.
+  </p>
+  <ol class="steps">
+    <li>Open <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a> and log in.</li>
+    <li>Click <strong>Create app</strong>. Name it anything (e.g. "Plexify"). Description optional.</li>
+    <li>For <strong>Redirect URI</strong>, paste exactly:<br>
+        <code class="block">{{ redirect_uri }}</code>
+        <small class="muted">If you change PUBLIC_BASE_URL in <code>.env</code>, update this here too.</small>
+    </li>
+    <li>API: <strong>Web API</strong>. Save.</li>
+    <li>On the app page → <strong>Settings</strong>, copy the Client ID and Client Secret below.</li>
+  </ol>
+  <form method="post" class="form">
+    <label>
+      Client ID
+      <input type="text" name="client_id" value="{{ client_id }}" required autocomplete="off">
+    </label>
+    <label>
+      Client Secret
+      <input type="password" name="client_secret" required autocomplete="off">
+    </label>
+    <button type="submit" class="btn primary">Save credentials</button>
+  </form>
+</section>
+{% endblock %}

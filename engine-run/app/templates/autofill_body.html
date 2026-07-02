@@ -1,0 +1,307 @@
+{# Qobuz/Tidal auth token moved into the SpotiFLAC card (it's SpotiFLAC-specific). Its
+   style + script remain here and still drive the relocated #qobuz-token-form by id. #}
+
+<style>
+.qobuz-token-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  flex-wrap: wrap;
+}
+.qobuz-token-row input[type="password"], .qobuz-token-row input[type="text"] {
+  flex: 1; min-width: 240px; max-width: 520px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: #e7e9ee;
+}
+.qobuz-token-row input:focus {
+  border-color: rgba(29,185,84,0.45);
+  outline: none;
+}
+#qobuz-token-status { display: block; }
+#qobuz-token-status.success { color: #1db954; }
+#qobuz-token-status.error   { color: #ff6b6b; }
+</style>
+
+<script>
+(function() {
+  const form   = document.getElementById('qobuz-token-form');
+  const input  = document.getElementById('qobuz-token-input');
+  const showBtn = document.getElementById('qobuz-token-show');
+  const status = document.getElementById('qobuz-token-status');
+  if (!form) return;
+
+  showBtn.addEventListener('click', () => {
+    if (input.type === 'password') {
+      input.type = 'text';
+      showBtn.textContent = 'hide';
+    } else {
+      input.type = 'password';
+      showBtn.textContent = 'show';
+    }
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    status.classList.remove('success', 'error');
+    status.textContent = 'saving...';
+    try {
+      const r = await fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        headers: { 'X-Requested-With': 'fetch' },
+      });
+      const d = await r.json();
+      if (d.ok) {
+        status.classList.add('success');
+        const word = d.set ? ('set ' + plxIcon('i-check') + ' ' + (d.preview ? '(' + d.preview + ')' : '')) : 'cleared';
+        status.innerHTML = 'Current: <strong>' + word + '</strong>';
+        input.value = '';
+        input.type = 'password';
+        showBtn.textContent = 'show';
+      } else {
+        status.classList.add('error');
+        status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(d.error || 'unknown error');
+      }
+    } catch (err) {
+      status.classList.add('error');
+      status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(err.message);
+    }
+  });
+})();
+</script>
+
+{# ════ DOWNLOADING — one card, one form, one save ════ #}
+<section class="card" id="downloading-card">
+  <h2>Downloading
+    <span class="smart-badge">{{ 'ON' if autofill_enabled else 'OFF' }}</span>
+    <small class="muted" data-tip="The whole pipeline in one place: what gets found, how much gets grabbed per song, and the quality rules. The engine self-tunes its pace to your real download speed.">(?)</small>
+  </h2>
+  <form method="post" action="{{ url_for('main.save_downloading') }}" class="stack">
+
+    <label class="toggle-row big">
+      <input type="checkbox" name="autofill_enabled" {% if autofill_enabled %}checked{% endif %}>
+      <span class="toggle-label"><strong>Find new music</strong>
+        <small class="muted">— scan your Spotify and queue what's missing from the library</small></span>
+    </label>
+    <label class="toggle-row big">
+      <input type="checkbox" name="autofill_picker_enabled"
+             {% if get_config('autofill_picker_enabled', '0') == '1' %}checked{% endif %}>
+      <span class="toggle-label"><strong>Download the queue</strong>
+        <small class="muted">— the engine that fetches queued albums from your sources (Soulseek, SpotiFLAC, Qobuz mirror, Telegram)</small></span>
+    </label>
+
+    <fieldset class="source-list">
+      <legend>What feeds it</legend>
+      <label class="toggle-row">
+        <input type="checkbox" name="source_liked" {% if 'liked' in enabled_sources %}checked{% endif %}>
+        <span class="toggle-label">Liked Songs</span>
+        <span class="muted small">Every track you've hearted in Spotify.</span>
+      </label>
+      <label class="toggle-row">
+        <input type="checkbox" name="source_followed_artists"
+               {% if 'followed_artists' in enabled_sources %}checked{% endif %}>
+        <span class="toggle-label">Followed Artists</span>
+        <span class="muted small">Every album + single by every artist you follow on Spotify — high volume, queues grow fast.</span>
+      </label>
+      {% if spotify_playlists %}
+      <details class="nested-toggle">
+        <summary>Specific playlists ({{ spotify_playlists | length }} available)</summary>
+        <div class="playlist-grid">
+          {% for p in spotify_playlists %}
+          <label class="toggle-row">
+            <input type="checkbox" name="source_playlist" value="{{ p.id }}"
+                   {% if 'playlist:' ~ p.id in enabled_sources %}checked{% endif %}>
+            <span class="toggle-label">{{ p.name }}{% if not p.owned %} <small class="muted">· by {{ p.owner }}</small>{% endif %}</span>
+            <span class="muted small">{{ p.track_count }} tracks</span>
+          </label>
+          {% endfor %}
+        </div>
+      </details>
+      {% else %}
+      <p class="muted small">Connect Spotify to enable per-playlist sources.</p>
+      {% endif %}
+    </fieldset>
+
+    <fieldset class="source-list">
+      <legend>How much per liked song</legend>
+      <label class="toggle-row">
+        <input type="radio" name="autofill_acquisition_mode" value="song"
+               {% if get_config('autofill_acquisition_mode', 'album') == 'song' %}checked{% endif %}>
+        <span><strong>Song only</strong> <small class="muted">— just the exact track; smallest disk footprint</small></span>
+      </label>
+      <label class="toggle-row">
+        <input type="radio" name="autofill_acquisition_mode" value="album"
+               {% if get_config('autofill_acquisition_mode', 'album') == 'album' %}checked{% endif %}>
+        <span><strong>Whole album</strong> <small class="muted">— the full album each liked song came from (default)</small></span>
+      </label>
+      <label class="toggle-row">
+        <input type="radio" name="autofill_acquisition_mode" value="discography"
+               {% if get_config('autofill_acquisition_mode', 'album') == 'discography' %}checked{% endif %}>
+        <span><strong>Full artist discography</strong> <small class="muted">— every album + single by every liked artist; 100s of GB possible. New releases auto-queue daily.</small></span>
+      </label>
+    </fieldset>
+
+    <fieldset class="source-list">
+      <legend>Quality rules</legend>
+      <label class="toggle-row">
+        <input type="checkbox" name="autofill_strict_flac"
+               {% if get_config('autofill_strict_flac', '1') == '1' %}checked{% endif %}>
+        <span><strong>FLAC only</strong> <small class="muted">— reject MP3/lossy from every source</small></span>
+      </label>
+      <label class="toggle-row">
+        <input type="checkbox" name="autofill_allow_mp3_fallback"
+               {% if get_config('autofill_allow_mp3_fallback', '0') == '1' %}checked{% endif %}>
+        <span><strong>MP3-320 as last resort</strong> <small class="muted">— only after every FLAC option is exhausted</small></span>
+      </label>
+      <label class="toggle-row">
+        <input type="checkbox" name="autofill_allow_cd_quality"
+               {% if get_config('autofill_allow_cd_quality', '0') == '1' %}checked{% endif %}>
+        <span><strong>CD-quality for stuck albums</strong> <small class="muted">— {{ total_failed or 0 }} albums gave up waiting for hi-res; let them land 16-bit/44.1 FLAC instead (re-queues them on enable)</small></span>
+      </label>
+    </fieldset>
+
+    <p class="muted small">
+      <span class="smart-badge">AUTO</span> Pace is automatic — the engine tunes itself to your
+      real download speed and pauses entirely while anyone streams video from Plex.
+    </p>
+    <div class="row"><button type="submit" class="btn primary">Save downloading settings</button></div>
+  </form>
+</section>
+
+{# ════ MAINTENANCE — manual actions, cache, library pruning ════ #}
+<section class="card" id="maintenance-card">
+  <h2>Maintenance
+    <small class="muted" data-tip="One-off actions. None of these run on their own; the background engine handles the steady state.">(?)</small>
+  </h2>
+  <div class="row" style="gap: 0.8em; flex-wrap: wrap">
+    <form method="post" action="{{ url_for('main.library_autofill_scan_now') }}" style="display:inline">
+      <button type="submit" class="btn">Scan Spotify now</button>
+    </form>
+    <form method="post" action="{{ url_for('main.library_autofill_picker_run') }}" style="display:inline">
+      <button type="submit" class="btn">Download one album now</button>
+    </form>
+    <form method="post" action="{{ url_for('main.library_autofill_backfill_plex') }}" style="display:inline"
+          onsubmit="return confirm('Backfill Plex matches for all unmatched Spotify tracks? Can take minutes.')">
+      <button type="submit" class="btn">Backfill Plex matcher</button>
+    </form>
+    <form method="post" action="{{ url_for('main.library_autofill_bulk_retry') }}" style="display:inline"
+          onsubmit="return confirm('Re-attempt every failed/low-confidence album?')">
+      <button type="submit" class="btn">Bulk-retry failed</button>
+    </form>
+  </div>
+  <p class="muted small" style="margin-top:6px">
+    Scan = one-off Spotify pull. Download one = test the engine without waiting for its tick.
+    Backfill = re-match Spotify tracks against Plex. Bulk-retry = reset failed albums for another attempt.
+  </p>
+
+  <div style="border-top: 1px solid var(--line); margin-top: 1em; padding-top: 1em">
+    <h3 style="margin:0 0 6px">Spotify cache</h3>
+    <p class="muted small">The engine reads your Liked Songs from a local copy (auto-syncs every 6 h, survives rate-limits).</p>
+    <div class="stat-grid" style="margin:0.3em 0">
+      <div><b>{{ spotify_cache_stats.count or 0 }}</b><span class="muted">tracks cached</span></div>
+      {% if spotify_cache_stats.last_sync.finished_at %}
+      <div>
+        <b>{{ spotify_cache_stats.last_sync.new or 0 }}/{{ spotify_cache_stats.last_sync.updated or 0 }}/{{ spotify_cache_stats.last_sync.removed or 0 }}</b>
+        <span class="muted">last sync: new/upd/rm</span>
+      </div>
+      <div>
+        <b>{% if spotify_cache_stats.last_sync.aborted_partial %}<span style="color:var(--danger)">partial</span>{% else %}<span style="color:var(--ok)">full</span>{% endif %}</b>
+        <span class="muted">{{ spotify_cache_stats.last_sync.finished_at[:16] }} UTC</span>
+      </div>
+      {% endif %}
+    </div>
+    <form method="post" action="{{ url_for('main.library_autofill_sync_spotify_now') }}" style="display:inline">
+      <button class="btn" type="submit">Sync Spotify now</button>
+    </form>
+  </div>
+
+  <div style="border-top: 1px solid var(--line); margin-top: 1em; padding-top: 1em">
+    <h3 style="margin:0 0 6px">Apply scope to the existing library</h3>
+    <p class="muted small">
+      Changing "how much per liked song" above never auto-deletes anything. These sync what's
+      already on disk to the saved scope — out-of-scope files move to
+      <code>/plexify-music/__autofill_pruned/{date}/</code>, never deleted.
+    </p>
+    <div class="row" style="gap:0.8em">
+      <form method="post" action="{{ url_for('main.apply_mode_to_library_dry_run') }}" style="display:inline">
+        <input type="hidden" name="autofill_acquisition_mode" value="{{ get_config('autofill_acquisition_mode', 'album') }}">
+        <button type="submit" class="btn">Preview prune (dry-run)</button>
+      </form>
+      <form method="post" action="{{ url_for('main.apply_mode_to_library_apply') }}" style="display:inline"
+            onsubmit="return confirm('Move out-of-scope files to /plexify-music/__autofill_pruned/? Files are safe to recover until you rm the dir.')">
+        <input type="hidden" name="autofill_acquisition_mode" value="{{ get_config('autofill_acquisition_mode', 'album') }}">
+        <button type="submit" class="btn">Apply scope now</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+{# ── Status / last run (AUDIT-FIXED) ──────────────────────────────── #}
+<section class="card">
+  <h2>Engine status</h2>
+
+  {# Coverage warning uses whichever value is most current and meaningful #}
+  {% set _cov = last_run.plex_coverage_pct if (last_run.plex_coverage_pct is defined and last_run.plex_coverage_pct > 0) else (last_successful_run.plex_coverage_pct if last_successful_run.plex_coverage_pct is defined else None) %}
+  {% if _cov is not none and _cov < 50 and (last_run.enabled or last_successful_run.enabled) %}
+  <p class="warning">
+    <strong>Plex coverage is {{ _cov }}%.</strong>
+    The Plex matcher (in this app) has only matched {{ _cov }}% of
+    your Spotify tracks against the Plex library. Until that catches up, the
+    autofill may over-recommend albums you actually already have on disk.
+    Tip: open the Dashboard and let Plexify's mirror loops run for a
+    while before flipping autofill ON.
+  </p>
+  {% endif %}
+
+  {% if last_run.source_errors %}
+  <p class="error">
+    <strong>Source errors during last run:</strong>
+    <ul class="small">{% for err in last_run.source_errors %}<li>{{ err }}</li>{% endfor %}</ul>
+    {% set joined = last_run.source_errors | join(' ') %}
+    {% if 'Insufficient client scope' in joined or '403' in joined %}
+      <p>
+        <strong>Likely cause:</strong> the Spotify OAuth token granted before
+        <code>user-library-read</code> was added needs to be re-issued.
+        <a href="{{ url_for('main.spotify_login') }}" class="btn primary small">Reconnect Spotify</a>
+      </p>
+    {% elif '429' in joined %}
+      <p>
+        <strong>Cause:</strong> Spotify rate-limited the API call. The engine
+        will retry on the next tick — no action needed. Numbers below come
+        from the <em>last successful run</em>.
+      </p>
+    {% endif %}
+  </p>
+  {% endif %}
+
+  {# Stat-row fallback: if this run failed, show last successful run #}
+  {% set _r = last_successful_run if (last_run.run_ok == False and last_successful_run.started_at is defined) else last_run %}
+  {% set _from_last_good = (last_run.run_ok == False and last_successful_run.started_at is defined) %}
+
+  <p class="small">
+    <strong>{{ total_queued }}</strong> queued ·
+    <strong>{{ total_downloading or 0 }}</strong> downloading ·
+    <strong>{{ total_imported or 0 }}</strong> imported ·
+    <strong>{{ total_library_existing or 0 }}</strong> already owned ·
+    <strong>{{ total_failed }}</strong> stuck
+    <span class="muted">— live detail lives on the <a href="{{ url_for('main.dashboard') }}">Dashboard</a></span>
+  </p>
+
+  {% if last_run.started_at %}
+  <p class="muted small">
+    {% if last_run.run_ok %}
+      <span style="color:var(--ok)">&check;</span> Last run succeeded — started {{ last_run.started_at }} (UTC){% if last_run.finished_at %}, finished {{ last_run.finished_at }}{% endif %}.
+    {% elif last_run.run_ok == False %}
+      <span style="color:var(--danger)">&cross;</span> Last run failed — started {{ last_run.started_at }} (UTC){% if last_run.finished_at %}, finished {{ last_run.finished_at }}{% endif %}.
+      {% if last_successful_run.started_at %}
+      Last <em>successful</em> run was {{ last_successful_run.started_at }}.
+      {% endif %}
+    {% else %}
+      Last run started {{ last_run.started_at }} (UTC){% if last_run.finished_at %}, finished {{ last_run.finished_at }}{% endif %}.
+    {% endif %}
+  </p>
+  {% endif %}
+</section>

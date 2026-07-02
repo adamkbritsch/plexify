@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Plex setup — Plexify{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Plex / Plexamp setup</h1>
+  <p>
+    Connect to your Plex server. The app will mirror Spotify playlists into a Plex
+    Music playlist of matching <strong>lossless (FLAC/ALAC) files</strong> from your library.
+    Tracks that aren't in Plex (or only exist as MP3/AAC) are logged as misses for Lidarr.
+  </p>
+  {% if health.connected %}
+    <p class="pill on">connected</p>
+    {% if health.music_section %}
+      <p class="muted"><small>Music section: <strong>{{ health.music_section }}</strong> — {{ health.track_count }} tracks indexed.</small></p>
+    {% endif %}
+  {% else %}
+    <p class="pill off">not connected</p>
+    {% if health.error %}<p class="muted"><small>{{ health.error }}</small></p>{% endif %}
+  {% endif %}
+
+  <form method="post" class="form">
+    <label>
+      Plex URL
+      <input type="text" name="plex_url" placeholder="http://&lt;your-plex-host&gt;:32400" value="{{ plex_url }}" required>
+    </label>
+    <label>
+      Plex token
+      <input type="password" name="plex_token" value="{{ plex_token }}" required autocomplete="off">
+    </label>
+    <details class="help-block">
+      <summary>How to find your Plex token (3 ways, pick whichever is easiest)</summary>
+      <ol class="steps" style="margin-top:10px">
+        <li><strong>Easiest — XML method:</strong> Open any track in Plex web. Click the <strong>… menu → Get Info → View XML</strong>. In the address bar of the new tab, find <code>X-Plex-Token=</code> followed by your token. Copy everything after the equals sign up to the next <code>&amp;</code>.</li>
+        <li><strong>Account page:</strong> <a href="https://app.plex.tv/desktop#!/settings/account" target="_blank" rel="noopener">app.plex.tv → Settings → Account</a>. Look for "Authorized Devices" → click an entry → token appears in the URL query string.</li>
+        <li><strong>Plex docs:</strong> <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank" rel="noopener">support.plex.tv guide</a> — has screenshots.</li>
+      </ol>
+      <p class="muted"><small>The token looks like a 20-character random string. Don't share it publicly — it grants full access to your Plex server.</small></p>
+    </details>
+    {% if sections %}
+    <label>
+      Music section
+      <select name="plex_music_section_key">
+        {% for s in sections %}
+          <option value="{{ s.key }}" {% if s.key == plex_section_key %}selected{% endif %}>{{ s.title }} (key {{ s.key }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% else %}
+      <p class="muted"><small>Music sections will appear here after saving credentials.</small></p>
+    {% endif %}
+    <div class="row gap">
+      <button type="submit" class="btn primary">Save & test</button>
+      {% if health.connected %}
+        <a href="{{ url_for('main.dashboard') }}" class="btn">Done</a>
+      {% endif %}
+    </div>
+  </form>
+</section>
+{% endblock %}

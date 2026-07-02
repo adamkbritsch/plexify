@@ -1,0 +1,24 @@
+<h1>Connect Spotify</h1>
+<p class="muted">Spotify needs a free developer app — about 30 seconds.</p>
+<ol class="steps">
+  <li>Open <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">developer.spotify.com/dashboard</a> and log in.</li>
+  <li>Click <strong>Create app</strong> — name it anything (e.g. "Plexify").</li>
+  <li>For <strong>Redirect URI</strong>, paste exactly:<br><code class="block">{{ redirect_uri }}</code></li>
+  <li>API: <strong>Web API</strong>. Save, then open <strong>Settings</strong> and copy the Client ID + Secret.</li>
+</ol>
+<form id="stepform" method="post" action="{{ url_for('main.setup_spotify') }}" class="form">
+  <label>Client ID <input type="text" name="client_id" value="{{ client_id }}" required autocomplete="off"></label>
+  <label>Client Secret <input type="password" name="client_secret" required autocomplete="off"></label>
+</form>
+{% if client_id %}
+  {% if spotify_authed %}
+    <p class="pill on">authorized</p>
+  {% else %}
+    <div class="row gap" style="margin-top:10px"><a href="{{ url_for('main.spotify_login') }}" class="btn primary">Authorize Spotify account →</a></div>
+    <p class="muted small">Credentials saved. Click Authorize to connect your account and finish this step.</p>
+  {% endif %}
+{% endif %}
+<div class="wiz-foot">
+  <a href="{{ url_for('main.setup', step='welcome') }}" class="btn ghost">← Back</a>
+  <button type="submit" form="stepform" class="btn primary" style="margin-left:auto">Save credentials</button>
+</div>

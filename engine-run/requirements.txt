@@ -1,0 +1,24 @@
+Flask==3.0.3
+spotipy==2.24.0
+APScheduler==3.10.4
+SQLAlchemy==2.0.32
+gunicorn==22.0.0
+python-dotenv==1.0.1
+requests==2.32.3
+rapidfuzz==3.9.7
+plexapi==4.15.16
+PyYAML==6.0.2
+mutagen==1.47.0
+# SpotiFLAC v0.7.1+ imports httpx + tqdm but does NOT declare them in its
+# package metadata, and the in-app auto-update runs `pip install --no-deps`.
+# Pin them here so they're always present (this outage: picker_tick crashed
+# every tick with ModuleNotFoundError: No module named 'httpx', 2026-05-30).
+httpx==0.28.1
+tqdm==4.67.3
+SpotiFLAC @ git+https://github.com/ShuShuzinhuu/SpotiFLAC-Module-Version.git@main
+# Telegram source: drive @BeatSpotBot (FLAC) as a USER session (bots can't DM bots).
+Telethon==1.36.0
+# Smart update: Claude (Opus) self-heals broken SpotiFLAC git-main updates. Only called
+# when an update breaks the import AND the free deterministic patch can't fix it.
+anthropic>=0.92.0
+inotify_simple==1.3.5

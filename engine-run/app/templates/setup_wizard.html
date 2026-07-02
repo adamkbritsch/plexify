@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Setup — Plexify{% endblock %}
+{% block content %}
+<section class="card narrow wiz">
+  {% if step_index %}
+  <div class="wiz-stepper">
+    {% for k in numbered %}
+      {% set st = state[k] %}
+      <div class="wiz-dot {{ 'done' if st.done else ('cur' if k == step else 'todo') }}">
+        {% if st.done %}<svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-check"></use></svg>{% else %}{{ loop.index }}{% endif %}
+      </div>
+      {% if not loop.last %}<div class="wiz-conn {{ 'done' if st.done else '' }}"></div>{% endif %}
+    {% endfor %}
+  </div>
+  <div class="wiz-stepnum">Step {{ step_index }} of {{ total }} · {{ labels[step] }}</div>
+  {% endif %}
+  {% include "setup/" ~ step ~ ".html" %}
+</section>
+{% endblock %}

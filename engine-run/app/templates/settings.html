@@ -1,0 +1,671 @@
+{% extends "base.html" %}
+{% block title %}Settings — Plexify{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Settings</h1>
+  <p class="muted">
+    All connections + autofill config in one place. Changes take effect immediately.
+  </p>
+</div>
+
+{# ── Sources — automatic (smart) ─────────────────────────────── #}
+{% if bypass_prompt_pending %}
+<section class="card" id="bypass-prompt-card" style="border-color: var(--warn) !important">
+  <h2>Repair prompt for your AI
+    <small class="muted" data-tip="You changed a break-risky setting with the external-AI bypass armed. The new value is saved and live; paste this brief into your AI app so it can adapt the code that depended on the old value.">(?)</small>
+  </h2>
+  <p class="muted small">The setting is saved. Paste this into Claude (or your AI of choice) with access to the NAS to finish the job:</p>
+  <textarea id="bypass-prompt-text" readonly rows="10" style="width:100%; font-size:12px">{{ bypass_prompt_pending }}</textarea>
+  <div class="row gap" style="margin-top:8px">
+    <button type="button" class="btn primary" id="bypass-copy-btn">Copy prompt</button>
+    <form method="post" action="{{ url_for('main.dismiss_bypass_prompt') }}" style="display:inline">
+      <button type="submit" class="btn">Dismiss</button>
+    </form>
+    <span id="bypass-copy-status" class="muted small"></span>
+  </div>
+</section>
+<script>
+(function(){
+  const b = document.getElementById('bypass-copy-btn');
+  if (!b) return;
+  b.addEventListener('click', async () => {
+    const t = document.getElementById('bypass-prompt-text');
+    try { await navigator.clipboard.writeText(t.value); }
+    catch (e) { t.select(); document.execCommand('copy'); }
+    document.getElementById('bypass-copy-status').innerHTML = plxIcon('i-check') + ' copied';
+  });
+})();
+</script>
+{% endif %}
+
+<section class="card" id="source-priority-card">
+  <h2>Sources <span class="smart-badge">AUTO</span></h2>
+  <p class="muted small">
+    Plexify chooses the source for every album itself. <strong>Soulseek</strong>
+    (peer-to-peer) is tried first — resilient and independent; <strong>SpotiFLAC</strong>
+    (Tidal · Qobuz · Deezer · Amazon) supplies 24-bit hi-res when its mirrors are up; and
+    the <strong>Qobuz mirror</strong> (squid.wtf) serves hi-res directly when its
+    backend is healthy; and <strong>Telegram</strong> (@BeatSpotBot) is the last-resort FLAC fallback. If one source is down or
+    rate-limited it leans on the others automatically, and it only insists on hi-res from
+    Soulseek when a hi-res source is actually delivering.
+  </p>
+  <div class="srcauto">
+    <div class="srcauto-item unknown" id="srcauto-soulseek"><span class="srcauto-name">Soulseek</span><span class="srcauto-state muted small">…</span></div>
+    <div class="srcauto-item unknown" id="srcauto-squid"><span class="srcauto-name">Qobuz mirror</span><span class="srcauto-state muted small">…</span></div>
+    <div class="srcauto-item unknown" id="srcauto-spotiflac"><span class="srcauto-name">SpotiFLAC</span><span class="srcauto-state muted small">…</span></div>
+    <div class="srcauto-item unknown" id="srcauto-telegram"><span class="srcauto-name">Telegram</span><span class="srcauto-state muted small">…</span></div>
+  </div>
+</section>
+<script>
+(function(){
+  async function poll(){
+    try{
+      const d = await (await fetch('/api/dashboard/health',{cache:'no-store'})).json();
+      const svc=(d&&d.services)||{};
+      const set=(id,info)=>{const it=document.getElementById(id); if(!it) return; const e=it.querySelector('.srcauto-state'); if(e) e.textContent=(info&&info.detail)||'status unknown'; it.classList.remove('green','yellow','red','unknown'); it.classList.add((info&&info.state)||'unknown');};
+      set('srcauto-soulseek', svc.soulseek); set('srcauto-squid', svc.squid); set('srcauto-spotiflac', svc.spotiflac); set('srcauto-telegram', svc.telegram);
+    }catch(e){}
+  }
+  poll(); setInterval(poll, 15000);
+})();
+</script>
+
+<script>
+(function () {
+  const list = document.getElementById('srcprio-list');
+  const saveBtn = document.getElementById('srcprio-save');
+  const status = document.getElementById('srcprio-status');
+  if (!list || !saveBtn) return;
+  let dragEl = null;
+
+  function relabelRanks() {
+    Array.from(list.children).forEach((li, i) => {
+      const r = li.querySelector('.srcprio-rank');
+      if (r) r.textContent = (i === 0) ? '1st · primary' : (i === 1 ? '2nd · fallback' : (i + 1) + 'th');
+      li.classList.toggle('is-primary', i === 0);
+    });
+    status.textContent = '';
+    status.classList.remove('success', 'error');
+  }
+
+  // Which sibling should the dragged item be inserted before, given pointer Y?
+  function afterElement(y) {
+    const els = Array.from(list.querySelectorAll('.srcprio-item:not(.dragging)'));
+    return els.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) return { offset, element: child };
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+  }
+
+  list.addEventListener('dragstart', (e) => {
+    const li = e.target.closest('.srcprio-item');
+    if (!li) return;
+    dragEl = li;
+    li.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', li.dataset.source || ''); } catch (_) {}
+  });
+  list.addEventListener('dragend', () => {
+    if (dragEl) dragEl.classList.remove('dragging');
+    dragEl = null;
+    relabelRanks();
+  });
+  list.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (!dragEl) return;
+    const after = afterElement(e.clientY);
+    if (after == null) list.appendChild(dragEl);
+    else list.insertBefore(dragEl, after);
+  });
+
+  // Keyboard reorder for a11y: Alt+ArrowUp / Alt+ArrowDown
+  list.addEventListener('keydown', (e) => {
+    const li = e.target.closest('.srcprio-item');
+    if (!li || !e.altKey) return;
+    if (e.key === 'ArrowUp' && li.previousElementSibling) {
+      e.preventDefault(); list.insertBefore(li, li.previousElementSibling); li.focus(); relabelRanks();
+    } else if (e.key === 'ArrowDown' && li.nextElementSibling) {
+      e.preventDefault(); list.insertBefore(li.nextElementSibling, li); li.focus(); relabelRanks();
+    }
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const order = Array.from(list.querySelectorAll('.srcprio-item')).map(li => li.dataset.source);
+    saveBtn.disabled = true;
+    status.classList.remove('success', 'error');
+    status.textContent = 'saving…';
+    try {
+      const r = await fetch('{{ url_for("main.library_autofill_save_source_priority") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' },
+        body: JSON.stringify({ order })
+      });
+      const d = await r.json();
+      if (d.ok) {
+        status.classList.add('success');
+        status.innerHTML = plxIcon('i-check') + ' saved — ' + plxEsc((d.order || order).join(' → '));
+      } else {
+        status.classList.add('error');
+        status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(d.error || 'save failed');
+      }
+    } catch (e) {
+      status.classList.add('error');
+      status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(e.message);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  relabelRanks();
+})();
+</script>
+
+
+{# ── Soulseek (peer-to-peer) ─────────────────────────────────── #}
+{# ── Plex & Spotify accounts ────────────────────────────────────── #}
+<section class="card" id="accounts-card">
+  <h2>Plex &amp; Spotify
+    <span class="srch-pill" data-svc="plex" style="vertical-align: middle"><span class="srch-dot"></span><span class="srch-detail">…</span></span> <span class="srch-pill" data-svc="spotify" style="vertical-align: middle"><span class="srch-dot"></span><span class="srch-detail">…</span></span>
+    <small class="muted" data-tip="The two accounts Plexify syncs between. Each connects on its own setup page; the path mapping below tells the app how YOUR Plex server sees the shared music folder.">(?)</small>
+  </h2>
+  <p class="muted small">
+    Spotify: {% if spotify_ok %}<strong>connected</strong>{% else %}not connected{% endif %} —
+    <a href="/setup">Spotify setup</a>.&nbsp;&nbsp;
+    Plex: {% if plex_health and plex_health.connected %}<strong>connected</strong>{% else %}not connected{% endif %} —
+    <a href="/setup/plex">Plex setup</a> (server URL + token).
+  </p>
+  <form method="post" action="{{ url_for('main.save_connections') }}" class="stack">
+    <label class="field">
+      <span class="field-label">Music library path as PLEX sees it
+        <small class="muted">— Plex and Plexify usually mount the same music folder at different paths.
+        Plexify always sees it as <code>/plexify-music</code>; pick the location your Plex server reports
+        for that same folder{% if not plex_locations %} (connect Plex to get a pick-list){% endif %}</small></span>
+      {% set _saved_plp = get_config('plex_library_path','/plexify-music') %}
+      {% if plex_locations %}
+        <select id="plp-sel" style="margin-bottom:6px">
+          {% for loc in plex_locations %}
+            <option value="{{ loc }}" {% if _saved_plp == loc %}selected{% endif %}>{{ loc }} — from your Plex library</option>
+          {% endfor %}
+          <option value="__custom__" {% if _saved_plp not in plex_locations %}selected{% endif %}>Custom…</option>
+        </select>
+      {% endif %}
+      <input type="text" name="plex_library_path" id="plp-custom" autocomplete="off"
+             value="{{ _saved_plp }}" placeholder="/plexify-music"
+             {% if plex_locations and _saved_plp in plex_locations %}style="display:none"{% endif %}>
+    </label>
+    <div class="row gap"><button type="submit" class="btn primary">Save</button></div>
+  </form>
+  {% if plex_locations %}
+  <script>
+  (function(){
+    const sel = document.getElementById('plp-sel');
+    const inp = document.getElementById('plp-custom');
+    if (!sel || !inp) return;
+    sel.addEventListener('change', function(){
+      if (sel.value === '__custom__') { inp.style.display = ''; inp.focus(); }
+      else { inp.value = sel.value; inp.style.display = 'none'; }
+    });
+  })();
+  </script>
+  {% endif %}
+</section>
+
+<section class="card" id="soulseek-card">
+  <h2>Soulseek
+    <span class="srch-pill" data-svc="soulseek" style="vertical-align: middle"><span class="srch-dot"></span><span class="srch-detail">…</span></span>
+    <small class="muted" data-tip="Peer-to-peer source, tried first for every album. The search is loosened to portions of the song name and a smart matcher picks the right file from the results. Manage the raw client + transfers on the Soulseek page.">(?)</small>
+  </h2>
+  <p class="muted small">
+    Peer-to-peer — resilient and independent of the streaming mirrors, so it's tried first for
+    every album. Searches are loosened to <strong>portions of the song name</strong> and a free
+    smart matcher analyses the results to find the right file. Manage transfers and the raw client
+    on the <a href="/soulseek">Soulseek page</a>.
+  </p>
+  <form method="post" action="{{ url_for('main.save_soulseek') }}" class="stack">
+    <label class="field">
+      <span class="field-label">slskd URL <small class="muted">— your Soulseek daemon, e.g. <code>http://slskd:5030</code> if it runs in the same compose stack</small></span>
+      <input type="text" name="slskd_url" autocomplete="off"
+             value="{{ get_config('slskd_url','') }}" placeholder="http://slskd:5030">
+    </label>
+    <label class="field">
+      <span class="field-label">slskd API key <small class="muted">— from slskd.yml (web &gt; authentication &gt; api_keys); blank keeps the saved one</small></span>
+      <input type="password" name="slskd_api_key" autocomplete="off"
+             placeholder="{% if get_config('slskd_api_key','') %}•••••••• (saved){% else %}paste your slskd API key{% endif %}">
+    </label>
+    <label class="row gap toggle-row">
+      <input type="checkbox" name="soulseek_hires_only" value="1"
+             {% if get_config('autofill_soulseek_hires_only','1') == '1' %}checked{% endif %}>
+      <span>Require hi-res from Soulseek
+        <small class="muted">— smart: auto-relaxes to CD-quality lossless when SpotiFLAC isn't delivering, so the library keeps filling instead of rejecting good peer files</small></span>
+    </label>
+    <div class="row gap"><button type="submit" class="btn primary">Save</button></div>
+  </form>
+</section>
+<script>
+(function () {
+  const pills = document.querySelectorAll('.srch-pill[data-svc]');
+  if (!pills.length) return;
+  async function poll() {
+    try {
+      const d = await (await fetch('/api/dashboard/health', { cache: 'no-store' })).json();
+      const svc = (d && d.services) || {};
+      pills.forEach(pill => {
+        const s = svc[pill.dataset.svc] || {};
+        pill.classList.remove('green', 'yellow', 'red', 'unknown');
+        pill.classList.add(s.state || 'unknown');
+        const e = pill.querySelector('.srch-detail');
+        if (e) e.textContent = s.detail || 'status unknown';
+      });
+    } catch (e) {}
+  }
+  poll();
+  setInterval(poll, 15000);
+})();
+</script>
+
+
+{# ── SpotiFLAC version + manual update ──────────────────────────── #}
+<section class="card" id="spotiflac-card">
+  <h2>SpotiFLAC
+    <span class="srch-pill" data-svc="spotiflac" style="vertical-align: middle"><span class="srch-dot"></span><span class="srch-detail">…</span></span>
+    <small class="muted" data-tip="The Python library that talks to Tidal/Qobuz/Deezer/Amazon. Auto-updates daily at 3am; use this button to update right now.">(?)</small></h2>
+  <p class="muted small">
+    Pulls the latest commit from
+    <code><a href="https://github.com/ShuShuzinhuu/SpotiFLAC-Module-Version" target="_blank">ShuShuzinhuu/SpotiFLAC-Module-Version</a>@main</code>.
+    Container restarts automatically after install (~10s).
+  </p>
+  <div class="sf-row">
+    <span class="sf-label">Installed:</span>
+    <strong id="sf-installed">…</strong>
+  </div>
+  <div class="sf-row">
+    <span class="sf-label">Upstream main:</span>
+    <strong id="sf-upstream-commit">…</strong>
+    <span class="muted small" id="sf-upstream-date"></span>
+  </div>
+  <div class="sf-row sf-actions">
+    <button id="sf-update-btn" class="btn primary">Update SpotiFLAC now</button>
+    <span id="sf-update-status" class="muted small"></span>
+  </div>
+
+  <hr style="border:none; border-top:1px solid rgba(255,255,255,0.08); margin:18px 0 14px">
+    <form method="post" action="{{ url_for('main.save_connections') }}" class="stack" style="margin-bottom:14px">
+    <label class="field">
+      <span class="field-label">Upstream repo {% if not (self_repair_full or self_repair_bypass) %}<span class="gated-note"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-lock"/></svg> risky — can break this source; unlock via <a href="#smart-update-card">Self-repair</a> (FULL or external-AI bypass)</span>{% elif self_repair_bypass and not self_repair_full %}<span class="gated-note" style="color: var(--sp)"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-zap"/></svg> bypass armed — saving a change hands you a repair prompt for your AI app</span>{% endif %}
+        <small class="muted">— the GitHub repo the nightly update installs from; point at a fork if upstream dies</small></span>
+      <input type="text" name="spotiflac_repo" autocomplete="off"
+             {% if not (self_repair_full or self_repair_bypass) %}disabled{% endif %}
+             value="{{ get_config('spotiflac_repo','ShuShuzinhuu/SpotiFLAC-Module-Version') }}"
+             placeholder="owner/repo">
+    </label>
+    {% if self_repair_full or self_repair_bypass %}<div class="row gap"><button type="submit" class="btn">Save repo</button></div>{% endif %}
+  </form>
+  <h3 style="margin:0 0 6px; font-size:15px; font-weight:600">Qobuz / Tidal auth token
+    <small class="muted" data-tip="Optional. Unlocks authenticated Tidal + Qobuz downloads via SpotiFLAC (one token for both). When the unauthorized scraper APIs are down (which is most of the time), this is what makes the difference between 0% and 80%+ success.">(?)</small>
+  </h3>
+  <p class="muted small">
+    Optional but <strong>highly recommended</strong>. When set, SpotiFLAC uses authenticated
+    Tidal &amp; Qobuz endpoints instead of the (frequently-broken) reverse-engineered scrapers.
+    Get a token from your active Qobuz session (browser DevTools → Network → look for
+    <code>user_auth_token</code> in any API request).
+  </p>
+  <form id="qobuz-token-form" method="post" action="{{ url_for('main.library_autofill_save_qobuz_token') }}" class="stack">
+    <label class="qobuz-token-row">
+      <span class="muted small">Token</span>
+      <input type="password" id="qobuz-token-input" name="spotiflac_qobuz_token"
+             placeholder="{% if get_config('spotiflac_qobuz_token') %}(set — clear field + save to remove){% else %}paste token here{% endif %}"
+             value="" autocomplete="off" spellcheck="false">
+      <button type="button" id="qobuz-token-show" class="btn">show</button>
+      <button type="submit" class="btn primary">Save</button>
+    </label>
+    <span id="qobuz-token-status" class="muted small">
+      Current: <strong>{% if get_config('spotiflac_qobuz_token') %}set <svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-check"></use></svg>{% else %}not set{% endif %}</strong>
+    </span>
+  </form>
+
+</section>
+
+<style>
+.sf-row { display: flex; align-items: baseline; gap: 8px; margin: 4px 0; }
+.sf-row .sf-label { min-width: 110px; color: var(--muted, #8b909a); font-size: 13px; }
+.sf-row.sf-actions { margin-top: 14px; gap: 12px; }
+#sf-update-status:empty { display: none; }
+#sf-update-status.success { color: #1db954; }
+#sf-update-status.error   { color: #ff6b6b; }
+</style>
+
+<script>
+(function() {
+  const installedEl = document.getElementById('sf-installed');
+  const commitEl    = document.getElementById('sf-upstream-commit');
+  const dateEl      = document.getElementById('sf-upstream-date');
+  const btn         = document.getElementById('sf-update-btn');
+  const status      = document.getElementById('sf-update-status');
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/diagnostics/spotiflac', { cache: 'no-store' });
+      const d = await r.json();
+      installedEl.textContent = d.installed_version || '?';
+      commitEl.textContent = (d.upstream_main_commit || '').slice(0, 10) || '?';
+      const dt = (d.upstream_main_date || '').slice(0, 10);
+      dateEl.textContent = dt ? '(' + dt + ')' : '';
+    } catch (e) {
+      installedEl.textContent = '(error)';
+    }
+  }
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    status.classList.remove('success', 'error');
+    status.innerHTML = plxIcon('i-hourglass') + ' pulling latest from GitHub main… (up to 3 min)';
+    try {
+      const r = await fetch('/settings/update-spotiflac', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'fetch' },
+      });
+      const d = await r.json();
+      if (d.ok) {
+        status.classList.add('success');
+        status.innerHTML = plxIcon('i-check') + ' ' + (d.old_version === d.new_version
+          ? 'already on latest (' + d.new_version + '); reinstalled commit'
+          : 'Updated <strong>' + d.old_version + '</strong> → <strong>' + d.new_version + '</strong>')
+          + '. Container restarting…';
+        // Container will restart in ~2s; reload page after 12s to land on new instance.
+        setTimeout(() => { window.location.reload(); }, 12000);
+      } else {
+        status.classList.add('error');
+        status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(d.error || 'unknown error');
+        btn.disabled = false;
+      }
+    } catch (e) {
+      status.classList.add('error');
+      status.innerHTML = plxIcon('i-x') + ' ' + plxEsc(e.message);
+      btn.disabled = false;
+    }
+  });
+
+  refresh();
+})();
+</script>
+
+
+{# ── Qobuz mirror (squid) source ───────────────────────────────── #}
+<section class="card" id="squid-card">
+  <h2>Qobuz mirror
+    <span class="srch-pill" data-svc="squid" style="vertical-align: middle"><span class="srch-dot"></span><span class="srch-detail">…</span></span>
+    <small class="muted" data-tip="A squid.wtf-style JSON mirror of Qobuz used as a hi-res FLAC source. Cooled down automatically when its backend degrades (e.g. starts serving MP3 transcodes).">(?)</small>
+  </h2>
+  <form method="post" action="{{ url_for('main.save_connections') }}" class="stack">
+    <label class="field">
+      <span class="field-label">Mirror base URL {% if not (self_repair_full or self_repair_bypass) %}<span class="gated-note"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-lock"/></svg> risky — can break this source; unlock via <a href="#smart-update-card">Self-repair</a> (FULL or external-AI bypass)</span>{% elif self_repair_bypass and not self_repair_full %}<span class="gated-note" style="color: var(--sp)"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-zap"/></svg> bypass armed — saving a change hands you a repair prompt for your AI app</span>{% endif %}</span>
+      <input type="text" name="squid_base" autocomplete="off"
+             {% if not (self_repair_full or self_repair_bypass) %}disabled{% endif %}
+             value="{{ get_config('squid_base','https://qobuz.squid.wtf') }}" placeholder="https://qobuz.squid.wtf">
+    </label>
+    <div class="row gap"><button type="submit" class="btn primary">Save</button></div>
+  </form>
+</section>
+
+{# ── Telegram source — @BeatSpotBot (third source) ───────────── #}
+<section class="card" id="telegram-card">
+  <h2>Telegram source
+    <span class="srch-pill" data-svc="telegram" style="vertical-align: middle"><span class="srch-dot"></span><span class="srch-detail">…</span></span>
+    <span class="smart-badge">{% if get_config('telegram_enabled','0') == '1' %}ON{% else %}OFF{% endif %}</span>
+    <small class="muted" data-tip="A third FLAC source. Plexify logs into Telegram as YOUR account (a saved Telethon session) and asks @BeatSpotBot for the album — bots can't message bots, so a user session is required. Tried after Soulseek and SpotiFLAC.">(?)</small>
+  </h2>
+  <p class="muted small">
+    Drives <strong>@BeatSpotBot</strong> (FLAC) as a fallback when Soulseek and SpotiFLAC
+    both come up empty. It signs in with a one-time <em>session string</em> generated from
+    your own Telegram API credentials — your phone number and login code never leave your NAS.
+  </p>
+
+  <form method="post" action="{{ url_for('main.save_telegram') }}" class="stack" id="tg-form">
+    <label class="row gap toggle-row">
+      <input type="checkbox" name="telegram_enabled" value="1"
+             {% if get_config('telegram_enabled','0') == '1' %}checked{% endif %}>
+      <span>Enable Telegram as a source</span>
+    </label>
+
+    <label class="field">
+      <span class="field-label">API ID <small class="muted">— from <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a> → API development tools</small></span>
+      <input type="text" name="telegram_api_id" inputmode="numeric" autocomplete="off"
+             value="{{ get_config('telegram_api_id','') }}" placeholder="1234567">
+    </label>
+
+    <label class="field">
+      <span class="field-label">API hash <small class="muted">— leave blank to keep the saved one</small></span>
+      <input type="password" name="telegram_api_hash" autocomplete="off"
+             placeholder="{% if get_config('telegram_api_hash','') %}•••••••• (saved){% else %}32-char hex{% endif %}">
+    </label>
+
+    <label class="field">
+      <span class="field-label">Session string <small class="muted">— generated once (see below); blank keeps the saved one</small></span>
+      <textarea name="telegram_session" rows="2" autocomplete="off" spellcheck="false"
+                placeholder="{% if get_config('telegram_session','') %}•••••••• (saved){% else %}paste the StringSession the helper prints{% endif %}"></textarea>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Bot username {% if not (self_repair_full or self_repair_bypass) %}<span class="gated-note"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-lock"/></svg> risky — can break this source; unlock via <a href="#smart-update-card">Self-repair</a> (FULL or external-AI bypass)</span>{% elif self_repair_bypass and not self_repair_full %}<span class="gated-note" style="color: var(--sp)"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-zap"/></svg> bypass armed — saving a change hands you a repair prompt for your AI app</span>{% endif %}</span>
+      <input type="text" name="telegram_bot" autocomplete="off"
+             {% if not (self_repair_full or self_repair_bypass) %}disabled{% endif %}
+             value="{{ get_config('telegram_bot','@BeatSpotBot') }}" placeholder="@BeatSpotBot">
+    </label>
+
+    <div class="row gap">
+      <button type="submit" class="btn primary">Save</button>
+      <button type="button" class="btn" id="tg-test-btn">Test session</button>
+      <span id="tg-test-status" class="muted small"></span>
+    </div>
+  </form>
+
+  <details class="tg-help">
+    <summary>How to generate the session string</summary>
+    <ol class="muted small">
+      <li>Get an <strong>API ID</strong> + <strong>API hash</strong> from <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a> → API development tools. Save them above (or just have them ready).</li>
+      <li>From the NAS, run this once and follow the phone + login-code prompts:
+        <pre><code>docker compose exec {{ container_name }} python -m app.tg_login</code></pre>
+      </li>
+      <li>It logs in as you and <strong>saves the session automatically</strong> — it also prints the string if you'd rather paste it here yourself. Your phone/code/2FA are never stored.</li>
+      <li>Tick <strong>Enable</strong>, Save, then click <strong>Test session</strong> — it should show your account and that @BeatSpotBot is reachable.</li>
+    </ol>
+  </details>
+</section>
+<script>
+(function(){
+  const btn=document.getElementById('tg-test-btn');
+  const out=document.getElementById('tg-test-status');
+  if(!btn) return;
+  btn.addEventListener('click', async ()=>{
+    btn.disabled=true; out.classList.remove('success','error'); out.textContent='testing…';
+    try{
+      const r=await fetch('{{ url_for("main.test_telegram") }}',{method:'POST',headers:{'X-Requested-With':'fetch'}});
+      const d=await r.json();
+      if(d.ok){
+        out.classList.add('success');
+        out.innerHTML=plxIcon('i-check')+' '+plxEsc(d.account||'authorized')+(d.bot_reachable?' · '+plxEsc(d.bot||'bot')+' reachable':' · bot NOT reachable');
+      }else{
+        out.classList.add('error');
+        out.innerHTML=plxIcon('i-x')+' '+plxEsc(d.error||'not authorized');
+      }
+    }catch(e){ out.classList.add('error'); out.innerHTML=plxIcon('i-x')+' '+plxEsc(e.message); }
+    finally{ btn.disabled=false; }
+  });
+})();
+</script>
+
+
+{# Smart update is now a subsection inside the SpotiFLAC card above; this drives its Test button. #}
+<script>
+(function(){
+  const btn=document.getElementById('su-test-btn');
+  const out=document.getElementById('su-test-status');
+  if(!btn) return;
+  btn.addEventListener('click', async ()=>{
+    btn.disabled=true; out.classList.remove('success','error'); out.textContent='testing…';
+    try{
+      const r=await fetch('{{ url_for("main.test_smart_update") }}',{method:'POST',headers:{'X-Requested-With':'fetch'}});
+      const d=await r.json();
+      if(d.ok){ out.classList.add('success'); out.innerHTML=plxIcon('i-check')+' key works · '+plxEsc(d.model||'opus'); }
+      else { out.classList.add('error'); out.innerHTML=plxIcon('i-x')+' '+plxEsc(d.error||'key invalid'); }
+    }catch(e){ out.classList.add('error'); out.innerHTML=plxIcon('i-x')+' '+plxEsc(e.message); }
+    finally{ btn.disabled=false; }
+  });
+})();
+</script>
+
+
+{# ── Self-repair — keeps every source healthy without intervention ── #}
+<section class="card" id="smart-update-card">
+  <h2>Self-repair
+    <span class="smart-badge">{% if get_config('smart_update_enabled','0') == '1' and get_config('anthropic_api_key','') %}FULL{% elif self_repair_bypass %}BYPASS{% else %}BASIC{% endif %}</span>
+    <small class="muted" data-tip="Everything Plexify does on its own to keep the sources working. The automatic layer is always on and free; the AI layer additionally repairs SpotiFLAC's nightly code updates when they break.">(?)</small>
+  </h2>
+  <p class="muted small" style="margin-bottom:10px">
+    Always on, for every source: failing sources <strong>cool down and fail over</strong> in
+    try-order; the <strong>Qobuz mirror</strong> is benched automatically when its backend
+    degrades to MP3; <strong>Soulseek</strong> falls back to queueing on busy peers and
+    auto-relaxes its hi-res rule when nothing else is delivering; <strong>Telegram</strong>
+    re-checks its session before every use. None of that needs configuration.
+  </p>
+  <p class="muted small" style="border-top:1px solid var(--line); padding-top:10px">
+    <strong>AI repair (optional)</strong> — SpotiFLAC is the one source that updates its own
+    code nightly. When an update breaks it, a free built-in patch is tried first; with a key
+    saved below, Claude then reads the error + the broken module and repairs it — sandboxed,
+    verified, rolled back if it didn't help. Costs ~a cent on the rare day it fires.
+  </p>
+  <form method="post" action="{{ url_for('main.save_smart_update') }}" class="stack" id="su-form">
+    <label class="row gap toggle-row">
+      <input type="checkbox" name="self_repair_bypass" value="1"
+             {% if self_repair_bypass %}checked{% endif %}>
+      <span><strong>External-AI bypass</strong>
+        <small class="muted">— no API key needed: risky settings unlock, and saving a change
+        generates a copy/paste prompt telling YOUR AI app (Claude, etc.) how to adapt the code</small></span>
+    </label>
+    <label class="row gap toggle-row">
+      <input type="checkbox" name="smart_update_enabled" value="1"
+             {% if get_config('smart_update_enabled','0') == '1' %}checked{% endif %}>
+      <span>Enable Claude smart-repair on broken updates</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Anthropic API key
+        <small class="muted">— from <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>; metered (pay-per-use); blank keeps the saved one</small></span>
+      <input type="password" name="anthropic_api_key" autocomplete="off"
+             placeholder="{% if get_config('anthropic_api_key','') %}•••••••• (saved){% else %}sk-ant-…{% endif %}">
+    </label>
+    <label class="field">
+      <span class="field-label">Model</span>
+      <input type="text" name="anthropic_model" autocomplete="off"
+             value="{{ get_config('anthropic_model','claude-opus-4-8') }}" placeholder="claude-opus-4-8">
+    </label>
+    <div class="row gap">
+      <button type="submit" class="btn primary">Save</button>
+      <button type="button" class="btn" id="su-test-btn">Test key</button>
+      <span id="su-test-status" class="muted small"></span>
+    </div>
+  </form>
+  <p class="muted small" style="margin-top:10px">
+    The key is billed per use by Anthropic — there's no free tier for API calls. It only fires when a
+    nightly update actually breaks SpotiFLAC and the free patch can't fix it, so cost is a few cents a year.
+  </p>
+</section>
+
+{# ════════ Downloading ════════ #}
+<div class="page-head" style="margin-top:2.6em; border-top:1px solid rgba(255,255,255,0.08); padding-top:1.6em">
+  <h2 style="font-size:19px; margin:0 0 4px">Downloading</h2>
+  <p class="muted small" style="margin:0">
+    Fills your Plex library from Spotify — what gets found, how much gets grabbed per song,
+    the quality rules, and the engine's status. Files land in <code>/plexify-music/{Artist}/{Album}/</code>;
+    completed albums lock and are browsable on the <a href="{{ url_for('main.library_view') }}">Library</a> page.
+  </p>
+</div>
+{% include "autofill_body.html" %}
+
+{# ── Star liked songs in Plexamp: now fully automatic (every 15 min); no manual card. #}
+
+{# ════════ Appearance ════════ #}
+<div class="page-head" style="margin-top:2.6em; border-top:1px solid rgba(255,255,255,0.08); padding-top:1.6em">
+  <h2 style="font-size:19px; margin:0 0 4px">Appearance</h2>
+  <p class="muted small" style="margin:0">How things look in Plex.</p>
+</div>
+
+{# ── Liked Songs playlist cover ─────────────────────────────────── #}
+<section class="card" id="liked-cover-card">
+  <h2>Liked Songs cover</h2>
+  <p class="muted small">Choose the poster for your <strong>Spotify Liked Songs</strong> playlist in Plex / Plexamp. Both stay available — pick the one you want shown.</p>
+  <div class="cover-picker" id="cover-picker">
+    {% set current_cover = liked_songs_cover or 'star' %}
+    <button type="button" class="cover-opt {{ 'active' if current_cover != 'heart' else '' }}" data-which="star">
+      <img src="{{ url_for('static', filename='covers/liked_star.png') }}" alt="Star cover">
+      <span>Star</span>
+    </button>
+    <button type="button" class="cover-opt {{ 'active' if current_cover == 'heart' else '' }}" data-which="heart">
+      <img src="{{ url_for('static', filename='covers/liked_heart.jpg') }}" alt="Heart cover">
+      <span>Heart</span>
+    </button>
+  </div>
+  <span id="cover-status" class="muted small"></span>
+</section>
+<script>
+(function () {
+  const picker = document.getElementById('cover-picker');
+  const st = document.getElementById('cover-status');
+  if (!picker) return;
+  picker.addEventListener('click', async (e) => {
+    const b = e.target.closest('.cover-opt'); if (!b) return;
+    const which = b.dataset.which;
+    picker.querySelectorAll('.cover-opt').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    st.textContent = 'updating Plex cover…';
+    try {
+      const r = await fetch('{{ url_for("main.set_liked_cover_route") }}', {
+        method: 'POST', headers: { 'X-Requested-With': 'fetch', 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'which=' + which
+      });
+      const d = await r.json();
+      st.innerHTML = d.ok ? (plxIcon('i-check') + ' cover set to the ' + plxEsc(which)) : (plxIcon('i-x') + ' ' + plxEsc(d.error || 'failed'));
+    } catch (e2) { st.innerHTML = plxIcon('i-x') + ' ' + plxEsc(e2.message); }
+  });
+})();
+</script>
+
+{# ════════ System & storage ════════ #}
+<div class="page-head" style="margin-top:2.6em; border-top:1px solid rgba(255,255,255,0.08); padding-top:1.6em">
+  <h2 style="font-size:19px; margin:0 0 4px">System &amp; storage</h2>
+  <p class="muted small" style="margin:0">Where Plexify reads and writes on your machine.</p>
+</div>
+
+{# ── Storage paths (documentation card) ─────────────────────────── #}
+<section class="card" id="paths-card">
+  <h2>Storage paths
+    <small class="muted" data-tip="Where Plexify reads and writes. The container-side paths are fixed; you point them at YOUR folders by editing .env next to docker-compose.yml.">(?)</small>
+  </h2>
+  <p class="muted small">
+    Inside the container the paths are fixed — you map them to your own folders in
+    <code>.env</code> (read by <code>docker-compose.yml</code>), then <code>docker compose up -d</code>:
+  </p>
+  <table class="small" style="width:100%; border-collapse:collapse">
+    <tr><th style="text-align:left; padding:4px 8px">In container</th>
+        <th style="text-align:left; padding:4px 8px">.env variable</th>
+        <th style="text-align:left; padding:4px 8px">What it is</th></tr>
+    <tr><td style="padding:4px 8px"><code>/plexify-music</code></td>
+        <td style="padding:4px 8px"><code>MUSIC_DIR</code></td>
+        <td style="padding:4px 8px" class="muted">Your music library — the same folder your Plex music library points at</td></tr>
+    <tr><td style="padding:4px 8px"><code>/downloads_music</code></td>
+        <td style="padding:4px 8px"><code>DOWNLOADS_DIR</code></td>
+        <td style="padding:4px 8px" class="muted">Staging area for downloads (SpotiFLAC, Soulseek) before import; also holds the reversible attics</td></tr>
+    <tr><td style="padding:4px 8px"><code>/data</code></td>
+        <td style="padding:4px 8px">(fixed: <code>./data</code>)</td>
+        <td style="padding:4px 8px" class="muted">Plexify's own database, logs, and rollback ledgers</td></tr>
+  </table>
+  <p class="muted small" style="margin-top:8px">
+    Your slskd container should download into <code>DOWNLOADS_DIR/complete</code> so Plexify can import its files.
+  </p>
+</section>
+
+
+{% endblock %}

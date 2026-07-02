@@ -1,0 +1,11 @@
+<h1>Optional sources</h1>
+<p class="muted">Extra acquisition sources. All optional — the picker works without them.</p>
+<form id="stepform" method="post" action="{{ url_for('main.setup_sources') }}" class="form">
+  <label>Qobuz / Tidal auth token <small class="muted">(unlocks 24-bit hi-res via SpotiFLAC)</small>
+    <input type="password" name="qobuz_token" value="{{ qobuz_token }}" autocomplete="off"></label>
+  <label class="row gap" style="align-items:center"><input type="checkbox" name="telegram_enabled" value="1" {% if telegram_enabled %}checked{% endif %}> <span>Enable Telegram fallback source <small class="muted">(configure the bot in Settings)</small></span></label>
+</form>
+<div class="wiz-foot">
+  <a href="{{ url_for('main.setup', step='library') }}" class="btn ghost">← Back</a>
+  <span class="wiz-foot-r"><form method="post" action="{{ url_for('main.setup_skip', step='sources') }}" class="inl"><button class="wiz-skip">Skip for now</button></form><button type="submit" form="stepform" class="btn primary">Save &amp; continue →</button></span>
+</div>

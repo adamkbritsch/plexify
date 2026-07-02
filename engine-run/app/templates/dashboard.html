@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Plexify{% endblock %}
+{% block content %}
+{% if setup_pending and setup_pending.count %}
+<div class="card setup-banner" id="setup-banner">
+  <svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-alert"></use></svg>
+  <span>Finish your setup &mdash; {{ setup_pending.count }} step{{ 's' if setup_pending.count != 1 else '' }} left.</span>
+  <a href="{{ url_for('main.setup', step=setup_pending.first) }}" class="btn small">Resume &rarr;</a>
+  <button type="button" class="setup-banner-x" aria-label="Dismiss" onclick="document.getElementById('setup-banner').remove()"><svg class="icn icn-s" aria-hidden="true"><use href="/static/icons.svg#i-x"></use></svg></button>
+</div>
+{% endif %}
+<section class="card dash-controls" id="dash-controls">
+  <div class="dashctl-row">
+    <button id="dashctl-refresh" class="dashctl-btn" title="Re-poll live + feed now">
+      <span class="dashctl-ico"><svg class="icn" aria-hidden="true"><use href="/static/icons.svg#i-refresh"/></svg></span><span>Refresh</span>
+    </button>
+    <button id="dashctl-run" class="dashctl-btn" title="Fire one picker tick immediately">
+      <span class="dashctl-ico"><svg class="icn" aria-hidden="true"><use href="/static/icons.svg#i-zap"/></svg></span><span>Run picker now</span>
+    </button>
+    <button id="dashctl-pause" class="dashctl-btn" title="Pause / resume the auto-picker">
+      <span class="dashctl-ico" id="dashctl-pause-ico"><svg class="icn" aria-hidden="true"><use href="/static/icons.svg#i-pause"/></svg></span><span id="dashctl-pause-lbl">Pause picker</span>
+    </button>
+    <div class="dashctl-fill" id="fillbal-wrap">
+      <button type="button" class="dashctl-fill-trigger" id="fillbal-trigger"
+              aria-haspopup="dialog" aria-expanded="false"
+              title="Balance the picker's effort between finishing albums and raising Plex coverage — click to adjust">
+        <span class="dashctl-fill-lbl">Fill</span>
+        <span class="dashctl-fill-val" id="fillbal-value">Even</span>
+        <span class="dashctl-fill-caret" aria-hidden="true">&#x25BE;</span>
+      </button>
+      <div class="dashctl-fill-pop" id="fillbal-pop" role="dialog" aria-label="Fill balance" hidden>
+        <div class="fill-pop-head">
+          <span class="fill-pop-title">Fill balance</span>
+          <button type="button" class="fillbal-auto" id="fillbal-auto"
+                  title="Auto: split turns by the live workload — how many new songs wait vs how many albums still need topping up">AUTO</button>
+          <span class="fill-pop-val" id="fillbal-pop-val">…</span>
+        </div>
+        <div class="fill-pop-stats muted small" id="fillbal-stats">…</div>
+        <div class="fill-pop-row">
+          <span class="fill-pop-end">Finish albums</span>
+          <span class="dashctl-fill-track">
+            <span class="dashctl-fill-dots"><i></i><i></i><i></i><i></i><i></i></span>
+            <input type="range" id="fillbal-slider" min="0" max="4" step="1"
+                   value="{{ get_config('autofill_fill_balance','2') }}"
+                   aria-label="Fill balance: finish albums versus new music"></span>
+          <span class="fill-pop-end">New music</span>
+        </div>
+        <div class="fill-pop-hint" id="fillbal-hint">…</div>
+      </div>
+    </div>
+    <span class="dashctl-spacer"></span>
+    <a href="{{ url_for('main.spotify_login') }}" class="dashctl-btn" title="Re-authorize Spotify to grant write access (Liked Songs + playlist sync back to Spotify)">
+      <span class="dashctl-ico"><svg class="icn" aria-hidden="true"><use href="/static/icons.svg#i-link"/></svg></span><span>Reconnect Spotify</span>
+    </a>
+    <label class="dashctl-toggle" title="Toggle 2s auto-refresh polling">
+      <input type="checkbox" id="dashctl-autorefresh" checked>
+      <span>Auto-refresh</span>
+    </label>
+    <span class="dashctl-status" id="dashctl-status">just now</span>
+  </div>
+  <div class="dashctl-row dashctl-row-sub">
+    <span class="dashctl-stat"><span class="dashctl-stat-label">In flight</span><span id="dashctl-inflight">&mdash;</span></span>
+    <span class="dashctl-stat" title="Pending picks, including liked songs the self-healing disk rescan re-queued for re-acquisition (runs automatically every 30 min).">
+      <span class="dashctl-stat-label">Queue</span><span id="dashctl-queue">&mdash;</span></span>
+    <span class="dashctl-stat"><span class="dashctl-stat-label">Next tick</span><span id="dashctl-next">&mdash;</span></span>
+    <span class="dashctl-stat" title="Download concurrency, auto-tuned (AIMD): lanes now / ceiling. Ramps up while downloads succeed, backs off the moment a source rate-limits.">
+      <span class="dashctl-stat-label">Concurrency <span class="smart-badge">AUTO</span></span><span id="dashctl-slots">&mdash;</span></span>
+    <span class="dashctl-stat" id="dashctl-cov-wrap" title="Share of your tracks matched in Plex. Higher = the picker recommends more accurately.">
+      <span class="dashctl-stat-label">Plex coverage</span><span id="dashctl-coverage">&mdash;</span></span>
+  </div>
+</section>
+<script>
+(function () {
+  const wrap = document.getElementById('fillbal-wrap');
+  const trigger = document.getElementById('fillbal-trigger');
+  const pop = document.getElementById('fillbal-pop');
+  const sl = document.getElementById('fillbal-slider');
+  const valChip = document.getElementById('fillbal-value');
+  const valPop = document.getElementById('fillbal-pop-val');
+  const autoBtn = document.getElementById('fillbal-auto');
+  const stats = document.getElementById('fillbal-stats');
+  const hint = document.getElementById('fillbal-hint');
+  if (!sl || !trigger || !pop || !wrap) return;
+  const LABELS = ['All albums', 'Mostly albums', 'Even', 'Mostly new', 'All new'];
+  let mode = 'auto', state = null;
+
+  function paint() {
+    const isAuto = mode === 'auto';
+    if (autoBtn) autoBtn.classList.toggle('on', isAuto);
+    sl.classList.toggle('dimmed', isAuto);
+    const manual = LABELS[+sl.value] || 'Even';
+    let label = manual;
+    if (state) {
+      const eff = `${state.fill_per_4}·${state.acquire_per_4}`;
+      label = isAuto ? `Auto ${eff}` : manual;
+      if (stats) stats.textContent =
+        `${state.queued} new song${state.queued === 1 ? '' : 's'} waiting · ` +
+        `${state.filling} albums still filling — ` +
+        `engine: ${state.fill_per_4} of 4 turns finish albums, ${state.acquire_per_4} fetch new`;
+    } else if (isAuto) {
+      label = 'Auto';
+    }
+    if (valChip) valChip.textContent = label;
+    if (valPop) valPop.textContent = label;
+    if (hint) hint.innerHTML = isAuto
+      ? 'Auto follows the workload: more unfinished albums &rarr; more topping up; a full queue of new likes &rarr; more fetching. Drag the slider to take manual control.'
+      : 'Manual: toward <b>New music</b> raises Plex coverage; toward <b>Finish albums</b> completes what you already have. Tap AUTO to hand it back.';
+  }
+  async function refresh() {
+    try {
+      const d = await (await fetch('/api/picker/fill-balance', { cache: 'no-store' })).json();
+      mode = d.mode || 'auto';
+      state = d;
+      if (typeof d.value === 'number') sl.value = d.value;
+      paint();
+    } catch (e) {}
+  }
+  async function save(extra) {
+    try {
+      await fetch('/api/picker/fill-balance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' },
+        body: extra,
+      });
+    } catch (e) {}
+    refresh();
+  }
+  const open = () => { pop.hidden = false; wrap.classList.add('open'); trigger.setAttribute('aria-expanded', 'true'); refresh(); };
+  const close = () => { pop.hidden = true; wrap.classList.remove('open'); trigger.setAttribute('aria-expanded', 'false'); };
+  trigger.addEventListener('click', (e) => { e.stopPropagation(); pop.hidden ? open() : close(); });
+  pop.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  if (autoBtn) autoBtn.addEventListener('click', () => { mode = 'auto'; paint(); save('mode=auto'); });
+  sl.addEventListener('input', () => { mode = 'manual'; paint(); });
+  sl.addEventListener('change', () => { mode = 'manual'; save('mode=manual&value=' + encodeURIComponent(sl.value)); });
+  refresh();
+})();
+</script>
+<section class="card sources-health" id="sources-health" aria-live="polite" aria-label="Download source health">
+  <span class="srch-pill" id="srch-soulseek" title="Soulseek backend status — tried 1st">
+    <span class="srch-dot"></span><span class="srch-name">Soulseek</span><span class="srch-detail">…</span>
+  </span>
+  <span class="srch-pill" id="srch-squid" title="squid.wtf (Qobuz hi-res) — tried 2nd">
+    <span class="srch-dot"></span><span class="srch-name">squid.wtf</span><span class="srch-detail">…</span>
+  </span>
+  <span class="srch-pill" id="srch-spotiflac" title="SpotiFLAC backend status — tried 3rd">
+    <span class="srch-dot"></span><span class="srch-name">SpotiFLAC</span><span class="srch-detail">…</span>
+  </span>
+  <span class="srch-pill" id="srch-telegram" title="Telegram (@BeatSpotBot) backend status — tried 4th">
+    <span class="srch-dot"></span><span class="srch-name">Telegram</span><span class="srch-detail">…</span>
+  </span>
+</section>
+<section class="card" id="live-card">
+  <h3 class="dash-card-label">Right now</h3>
+  <div id="live-content"><div class="live-empty">Loading…</div></div>
+</section>
+<script>
+// Source-health strip — reuses /api/dashboard/health (which reports
+// spotiflac + soulseek + telegram) and renders a coloured pill + detail for each.
+(function () {
+  const ALLOWED = new Set(['green', 'yellow', 'red', 'unknown']);
+  function esc(s){ return s==null?'':String(s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
+  const ORD = {1:'1st', 2:'2nd', 3:'3rd', 4:'4th'};
+  const WORD = {green:'Working', yellow:'Idle · ready', red:'Down', unknown:'Off'};
+  function paint(pillId, info) {
+    const pill = document.getElementById(pillId);
+    if (!pill) return;
+    const state = (info && ALLOWED.has(info.state)) ? info.state : 'unknown';
+    const detail = (info && info.detail) ? info.detail : 'status unknown';
+    pill.classList.remove('green','yellow','red','unknown');
+    pill.classList.add(state);
+    const nm = (info && info.name) || pill.querySelector('.srch-name')?.textContent || '';
+    const dEl = pill.querySelector('.srch-detail');
+    if (dEl) dEl.textContent = detail;
+    pill.setAttribute('title', nm + ' — ' + detail);
+    // Hover-expand popover with the full per-source picture.
+    let pop = pill.querySelector('.srch-pop');
+    if (!pop) { pop = document.createElement('div'); pop.className = 'srch-pop'; pill.appendChild(pop); }
+    const rows = [];
+    if (info && info.order) rows.push(['Source order', 'tried ' + (ORD[info.order] || info.order)]);
+    if (info && info.imports_1h != null) rows.push(['Last hour', info.imports_1h + ' import' + (info.imports_1h === 1 ? '' : 's')]);
+    rows.push(['Status', detail]);
+    pop.innerHTML =
+      '<div class="pop-head"><span class="pop-name">' + esc(nm) + '</span>' +
+      '<span class="pop-badge ' + state + '">' + (WORD[state] || '—') + '</span></div>' +
+      ((info && info.about) ? '<div class="pop-about">' + esc(info.about) + '</div>' : '') +
+      '<div class="pop-rows">' +
+      rows.map(r => '<div class="pop-row"><span>' + esc(r[0]) + '</span><b>' + esc(r[1]) + '</b></div>').join('') +
+      '</div>';
+  }
+  async function poll() {
+    try {
+      const r = await fetch('/api/dashboard/health', { cache: 'no-store' });
+      const d = await r.json();
+      const svc = (d && d.services) || {};
+      paint('srch-spotiflac', svc.spotiflac);
+      paint('srch-soulseek', svc.soulseek);
+      paint('srch-squid', svc.squid);
+      paint('srch-telegram', svc.telegram);
+    } catch (e) {
+      paint('srch-spotiflac', { state: 'unknown', detail: 'health endpoint unreachable' });
+      paint('srch-soulseek', { state: 'unknown', detail: 'health endpoint unreachable' });
+      paint('srch-squid', { state: 'unknown', detail: 'health endpoint unreachable' });
+      paint('srch-telegram', { state: 'unknown', detail: 'health endpoint unreachable' });
+    }
+  }
+  poll();
+  setInterval(poll, 15000);
+})();
+</script>
+<section class="card" id="feed-card">
+  <h3 class="dash-card-label">Recently added</h3>
+  <div id="feed-content"><div class="feed-empty">Loading…</div></div>
+  <div id="feed-more-wrap"></div>
+</section>
+<script src="{{ url_for('static', filename='dashboard-live.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='dashboard-reward-feed.js') }}?v=14"></script>
+<script src="{{ url_for('static', filename='dashboard-controls.js') }}?v=11"></script>
+{% endblock %}

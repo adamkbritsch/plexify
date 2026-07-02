@@ -1,0 +1,501 @@
+"""Plex Music client — destination-only.
+
+Reads from + writes to a user's Plex Music library. Never invoked from Spotify
+paths directly; only from `mirror_from_local` which reads the local backup.
+
+Key behaviors (after the 20-bug audit):
+- Search filter sanitizes Plex's metacharacters (`()*[]`) so weird titles don't
+  break the query parser.
+- `add_tracks` fetches items individually with per-item try/except so a single
+  stale Plex track ID doesn't kill the whole batch.
+- `remove_tracks` batches into a single `removeItems` call.
+- `create_playlist` deduplicates by name — re-uses an existing playlist of the
+  same name instead of creating a second one.
+- `_is_lossless` checks ALL media variants (handles FLAC at media[1+]).
+"""
+import logging
+import re
+import time
+import threading
+from dataclasses import dataclass
+from typing import Iterable, Optional
+
+from plexapi.exceptions import NotFound, PlexApiException
+from plexapi.server import PlexServer
+
+from .db import get_config
+
+log = logging.getLogger(__name__)
+
+LOSSLESS_CODECS = {"flac", "alac"}
+
+# In-process cache for the dashboard health check.
+# C4: lock against gunicorn-thread races.
+# Q30: cache value keyed by (url, token) so changing creds doesn't return
+# a stale "connected: True" for up to 30s.
+_HEALTH_CACHE: dict = {"key": None, "value": None, "ts": 0.0}
+_HEALTH_TTL_S = 30.0
+_HEALTH_LOCK = threading.Lock()
+
+# H10: cached PlexServer instance, keyed by (url, token). Avoids the network
+# handshake on every call to _connect (which happens N times per page render).
+_SERVER_CACHE: dict = {"key": None, "server": None, "ts": 0.0}
+_SERVER_TTL_S = 300.0
+_SERVER_LOCK = threading.Lock()
+
+# Strip Plex filter metacharacters (parens, brackets, asterisks, etc.) that
+# break the server's filter-string parser when interpolated into titles.
+_PLEX_FILTER_META = re.compile(r"[()\[\]*?]")
+
+
+@dataclass
+class Track:
+    key: str
+    title: str
+    artist: str
+    album: Optional[str]
+    duration_ms: int
+    codec: str
+    bitrate: Optional[int]
+    isrc: Optional[str] = None
+
+
+@dataclass
+class Playlist:
+    key: str
+    name: str
+    track_count: int
+
+
+def _connect() -> Optional[PlexServer]:
+    """H10: returns a cached PlexServer when creds unchanged; otherwise
+    handshakes once and caches for up to _SERVER_TTL_S seconds."""
+    url = get_config("plex_url")
+    token = get_config("plex_token")
+    if not (url and token):
+        return None
+    url = url.rstrip("/")
+    key = (url, token)
+    now = time.time()
+    with _SERVER_LOCK:
+        if (_SERVER_CACHE["key"] == key
+                and _SERVER_CACHE["server"] is not None
+                and (now - _SERVER_CACHE["ts"]) < _SERVER_TTL_S):
+            return _SERVER_CACHE["server"]
+    # Construct outside the lock so a slow handshake doesn't block other ops
+    try:
+        srv = PlexServer(url, token, timeout=15)
+    except Exception as e:
+        log.exception("Plex connect failed: %s", e)
+        with _SERVER_LOCK:
+            _SERVER_CACHE["key"] = None
+            _SERVER_CACHE["server"] = None
+            _SERVER_CACHE["ts"] = 0.0
+        return None
+    with _SERVER_LOCK:
+        _SERVER_CACHE["key"] = key
+        _SERVER_CACHE["server"] = srv
+        _SERVER_CACHE["ts"] = now
+    return srv
+
+
+def is_authed() -> bool:
+    return _connect() is not None
+
+
+def _music_section(plex: PlexServer):
+    section_key = get_config("plex_music_section_key")
+    try:
+        if section_key:
+            return plex.library.sectionByID(int(section_key))
+        for s in plex.library.sections():
+            if getattr(s, "type", None) == "artist":
+                return s
+    except Exception as e:
+        log.exception("Plex music section lookup failed: %s", e)
+    return None
+
+
+def list_music_sections() -> list[dict]:
+    plex = _connect()
+    if not plex:
+        return []
+    out = []
+    for s in plex.library.sections():
+        if getattr(s, "type", None) == "artist":
+            out.append({"key": str(s.key), "title": s.title})
+    return out
+
+
+def _is_lossless(track) -> tuple[bool, str, Optional[int]]:
+    """Inspect a plexapi Track for any FLAC/ALAC media variant.
+
+    Iterates ALL media (not just media[0]) because Plex tracks can have
+    multiple file copies and FLAC might be at index 1+.
+    """
+    best_codec = ""
+    best_bitrate = None
+    is_lossless = False
+    try:
+        media = getattr(track, "media", None) or []
+        for m in media:
+            codec = (getattr(m, "audioCodec", "") or "").lower()
+            br = getattr(m, "bitrate", None)
+            if codec in LOSSLESS_CODECS:
+                is_lossless = True
+                if best_bitrate is None or (br and best_bitrate is not None and br > best_bitrate):
+                    best_codec = codec
+                    best_bitrate = br
+                elif best_bitrate is None:
+                    best_codec = codec
+                    best_bitrate = br
+            elif not is_lossless:
+                best_codec = codec or best_codec
+                if best_bitrate is None:
+                    best_bitrate = br
+    except Exception:
+        pass
+    return (is_lossless, best_codec, best_bitrate)
+
+
+def _to_track(t) -> Track:
+    # Bug #13 fix: prefer originalTitle (the track-level artist) over
+    # grandparentTitle (the album artist). The latter shows "Various Artists"
+    # on compilations, which destroys our matcher's artist comparison.
+    artist = (getattr(t, "originalTitle", None)
+              or getattr(t, "grandparentTitle", None) or "")
+    album = getattr(t, "parentTitle", None)
+    duration_ms = int(getattr(t, "duration", 0) or 0)
+    _, codec, bitrate = _is_lossless(t)
+    return Track(
+        key=str(t.ratingKey),
+        title=getattr(t, "title", "") or "",
+        artist=str(artist),
+        album=album,
+        duration_ms=duration_ms,
+        codec=codec,
+        bitrate=bitrate,
+    )
+
+
+def list_playlists() -> list[Playlist]:
+    plex = _connect()
+    if not plex:
+        return []
+    out = []
+    try:
+        for p in plex.playlists(playlistType="audio"):
+            try:
+                out.append(Playlist(key=str(p.ratingKey), name=p.title, track_count=p.leafCount or 0))
+            except Exception:
+                continue
+    except Exception as e:
+        log.exception("Plex list playlists failed: %s", e)
+    return out
+
+
+def find_playlist_by_name(name: str) -> Optional[str]:
+    """Return ratingKey of an existing audio playlist with this exact name, else None.
+
+    Used by create_playlist to dedupe — prevents duplicate playlists when the
+    app re-creates a pair.
+    """
+    plex = _connect()
+    if not plex:
+        return None
+    try:
+        for p in plex.playlists(playlistType="audio"):
+            if (p.title or "").strip() == name.strip():
+                return str(p.ratingKey)
+    except Exception as e:
+        log.debug("find_playlist_by_name(%r) failed: %s", name, e)
+    return None
+
+
+def get_playlist_tracks(playlist_key: str) -> list[Track]:
+    plex = _connect()
+    if not plex:
+        return []
+    try:
+        pl = plex.fetchItem(int(playlist_key))
+    except NotFound:
+        log.warning("Plex playlist %s not found (was it deleted?)", playlist_key)
+        raise
+    except Exception as e:
+        log.exception("Plex fetch playlist failed: %s", e)
+        return []
+    out = []
+    try:
+        for t in pl.items():
+            try:
+                out.append(_to_track(t))
+            except Exception:
+                continue
+    except Exception as e:
+        log.exception("Plex playlist items failed: %s", e)
+    return out
+
+
+def create_playlist(name: str, first_track_keys: list[str]) -> Optional[str]:
+    """Create or reuse a Plex audio playlist with the given name.
+
+    Bug #10 fix: if a playlist with this name already exists, reuse it instead
+    of creating a duplicate. Useful when the user re-creates a pair and the
+    previous Plex playlist still exists.
+    """
+    plex = _connect()
+    if not plex or not first_track_keys:
+        return None
+    # Dedupe by name
+    existing = find_playlist_by_name(name)
+    if existing:
+        log.info("create_playlist: reusing existing Plex playlist %s named %r", existing, name)
+        return existing
+    try:
+        items = []
+        for k in first_track_keys:
+            try:
+                items.append(plex.fetchItem(int(k)))
+            except NotFound:
+                log.warning("create_playlist: seed track %s not in Plex anymore; skipping", k)
+                continue
+        if not items:
+            return None
+        pl = plex.createPlaylist(title=name, items=items)
+        return str(pl.ratingKey)
+    except PlexApiException as e:
+        log.exception("Plex create_playlist failed: %s", e)
+        return None
+
+
+PLEX_ADD_CHUNK = 100
+PLEX_OP_DELAY_S = 0.2
+
+
+def add_tracks(playlist_key: str, track_keys: Iterable[str]) -> list[str]:
+    """Add tracks to a Plex playlist in 100-track chunks. Returns the list of keys actually added.
+
+    Internal chunking protects against Plex's per-request URL/payload limits
+    when adding very large batches. Callers can pass any-sized list; this
+    function calls Plex's `addItems` 100 at a time with a small inter-chunk
+    delay to be polite under load.
+
+    Bug fixes in this function:
+    - Per-item fetch with NotFound rescue — one stale Plex ID no longer kills a batch.
+    - Returns the actually-added keys (excludes stale).
+    """
+    plex = _connect()
+    if not plex:
+        return []
+    keys = list(dict.fromkeys(track_keys))
+    if not keys:
+        return []
+    try:
+        pl = plex.fetchItem(int(playlist_key))
+    except NotFound:
+        log.error("add_tracks: playlist %s no longer exists", playlist_key)
+        raise
+
+    all_added: list[str] = []
+    for ci in range(0, len(keys), PLEX_ADD_CHUNK):
+        chunk = keys[ci:ci + PLEX_ADD_CHUNK]
+        valid_items = []
+        valid_keys = []
+        for k in chunk:
+            try:
+                item = plex.fetchItem(int(k))
+                valid_items.append(item)
+                valid_keys.append(k)
+            except NotFound:
+                log.info("add_tracks: Plex track %s gone; skipping", k)
+            except Exception as e:
+                log.warning("add_tracks: fetchItem(%s) failed: %s", k, e)
+        if not valid_items:
+            continue
+        try:
+            pl.addItems(valid_items)
+            all_added.extend(valid_keys)
+        except Exception as e:
+            log.exception("Plex addItems chunk failed (offset %d): %s", ci, e)
+            # Stop here so caller can persist what was added; subsequent retry resumes.
+            break
+        if ci + PLEX_ADD_CHUNK < len(keys):
+            time.sleep(PLEX_OP_DELAY_S)
+    return all_added
+
+
+def remove_tracks(playlist_key: str, track_keys: Iterable[str]) -> list[str]:
+    """Remove tracks from a Plex playlist. Returns the list of keys actually removed.
+
+    Bug #2 fix: batches all removals into a single removeItems call.
+    Bug #3 fix: loads playlist items ONCE.
+    """
+    plex = _connect()
+    if not plex:
+        return []
+    keys_set = {str(k) for k in track_keys}
+    if not keys_set:
+        return []
+    try:
+        pl = plex.fetchItem(int(playlist_key))
+    except NotFound:
+        log.warning("remove_tracks: playlist %s gone", playlist_key)
+        return []
+    try:
+        items_to_remove = [t for t in pl.items() if str(t.ratingKey) in keys_set]
+    except Exception as e:
+        log.exception("Plex remove_tracks fetch items failed: %s", e)
+        return []
+    if not items_to_remove:
+        return []
+    try:
+        pl.removeItems(items_to_remove)
+        return [str(t.ratingKey) for t in items_to_remove]
+    except Exception as e:
+        log.exception("Plex removeItems failed: %s", e)
+        return []
+
+
+def validate_track(key: str) -> bool:
+    """Bug #5 helper: check that a cached plex_track_key still exists in Plex."""
+    plex = _connect()
+    if not plex:
+        return False
+    try:
+        plex.fetchItem(int(key))
+        return True
+    except NotFound:
+        return False
+    except Exception:
+        # Be optimistic on transient errors; don't invalidate cache on network blip
+        return True
+
+
+def search_track(title: str, artist: str, duration_ms: Optional[int] = None) -> Optional[Track]:
+    """Find a lossless (FLAC/ALAC) copy of a track in the Plex music library."""
+    plex = _connect()
+    if not plex:
+        return None
+    section = _music_section(plex)
+    if not section:
+        return None
+    title_clean = (title or "").strip()
+    artist_clean = (artist or "").strip()
+    if not (title_clean and artist_clean):
+        return None
+
+    # Bug #7 fix: strip Plex filter metacharacters that break the query parser.
+    title_for_filter = _PLEX_FILTER_META.sub("", title_clean)
+
+    candidates: list[Track] = []
+    seen_keys: set[str] = set()
+
+    # VERSION-SUFFIX STRIP: Spotify titles carry " - Remastered 2009" /
+    # " - 2021 Mix" / "(Live)" qualifiers that Plex track titles don't —
+    # the #1 cause of downloaded-but-"not in Plex" false negatives
+    # (e.g. every remastered Beatles song). Search both forms.
+    import re as _re_v
+    title_stripped = _re_v.sub(
+        r"\s*[-–]\s*(remaster(ed)?|mono|stereo|live|acoustic|single|radio|"
+        r"(19|20)\d{2}|mix|version|edit|take|rooftop)[^-–]*$",
+        "", title_clean, flags=_re_v.IGNORECASE).strip()
+    title_stripped = _re_v.sub(r"\s*\((remaster|mix|live|mono|stereo|version|edit|deluxe)[^)]*\)\s*$",
+                               "", title_stripped, flags=_re_v.IGNORECASE).strip()
+    # Attempt 1: title-filtered search (fast, precise)
+    # Attempt 2: free-text fallback (broader, lets matcher filter by artist)
+    attempts = [
+        ("title-filter", lambda: section.searchTracks(filters={"track.title": title_for_filter}, limit=30)),
+        ("free-text", lambda: section.search(title_clean, libtype="track", limit=30)),
+    ]
+    if title_stripped and title_stripped.lower() != title_clean.lower():
+        _tsf = _PLEX_FILTER_META.sub("", title_stripped)
+        attempts.append(("title-filter-stripped",
+                         lambda: section.searchTracks(filters={"track.title": _tsf}, limit=30)))
+        attempts.append(("free-text-stripped",
+                         lambda: section.search(title_stripped, libtype="track", limit=30)))
+
+    for label, fn in attempts:
+        try:
+            results = fn() or []
+        except Exception as e:
+            log.debug("Plex search (%s) for %r failed: %s", label, title_clean, e)
+            continue
+        for t in results:
+            key = str(getattr(t, "ratingKey", "") or "")
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            from .version_match import demo_live_banned as _dlb
+            if _dlb(getattr(t, "title", "") or "", title):
+                continue  # (Demo)/(Live) take never counts as the clean liked song
+            is_lossless, codec, _ = _is_lossless(t)
+            if not is_lossless:
+                continue
+            try:
+                candidates.append(_to_track(t))
+            except Exception:
+                continue
+        if candidates:
+            from .matcher import pick_best
+            hit = pick_best(title, artist, duration_ms, candidates)
+            if hit:
+                return hit
+
+    return None
+
+
+def check_health(use_cache: bool = True) -> dict:
+    url = get_config("plex_url") or ""
+    token = get_config("plex_token") or ""
+    key = (url, token)
+    now = time.time()
+    if use_cache:
+        with _HEALTH_LOCK:
+            if (_HEALTH_CACHE["key"] == key
+                    and _HEALTH_CACHE["value"] is not None
+                    and (now - _HEALTH_CACHE["ts"]) < _HEALTH_TTL_S):
+                return _HEALTH_CACHE["value"]
+    out = {"connected": False, "music_section": None, "track_count": None, "error": None}
+    if not (get_config("plex_url") and get_config("plex_token")):
+        out["error"] = "no credentials"
+        with _HEALTH_LOCK:
+            _HEALTH_CACHE["key"] = key
+            _HEALTH_CACHE["value"] = out
+            _HEALTH_CACHE["ts"] = now
+        return out
+    plex = _connect()
+    if not plex:
+        out["error"] = "connect failed"
+        with _HEALTH_LOCK:
+            _HEALTH_CACHE["key"] = key
+            _HEALTH_CACHE["value"] = out
+            _HEALTH_CACHE["ts"] = now
+        return out
+    out["connected"] = True
+    try:
+        section = _music_section(plex)
+        if section:
+            out["music_section"] = section.title
+            out["track_count"] = section.totalSize
+    except Exception as e:
+        out["error"] = str(e)
+    with _HEALTH_LOCK:
+        _HEALTH_CACHE["key"] = key
+        _HEALTH_CACHE["value"] = out
+        _HEALTH_CACHE["ts"] = now
+    return out
+
+
+def invalidate_health_cache() -> None:
+    with _HEALTH_LOCK:
+        _HEALTH_CACHE["key"] = None
+        _HEALTH_CACHE["value"] = None
+        _HEALTH_CACHE["ts"] = 0.0
+    with _SERVER_LOCK:
+        _SERVER_CACHE["key"] = None
+        _SERVER_CACHE["server"] = None
+        _SERVER_CACHE["ts"] = 0.0
+
+
+def is_configured() -> bool:
+    return bool(get_config("plex_url") and get_config("plex_token"))

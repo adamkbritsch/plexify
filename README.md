@@ -1,11 +1,37 @@
-# Plexify
+<div align="center">
+
+<img src="docs/logo-plexify.png" alt="Plexify" width="360">
 
 **Keep your Plex music library in sync with Spotify — automatically, in lossless FLAC.**
+
+_On the author's own server, Plexify has reached **86% coverage of 2,420 Liked Songs (~142 hours of music)** — filled in automatically as lossless FLAC._
+
+</div>
 
 Plexify mirrors your Spotify playlists and Liked Songs into Plex, then quietly fills the gaps: it finds the songs you've saved but don't own yet, acquires them as FLAC, tags and files them the way Plex expects, and keeps everything organized. It has a polished web UI (and an optional native macOS app), a first-run setup wizard, and a background engine that just keeps your library complete.
 
 > [!IMPORTANT]
 > **Read this first.** Plexify can acquire music from peer-to-peer and mirror sources. It is a **personal library tool** — you are responsible for how you use it, and you must have the legal right to any music you download. On first run you must accept an agreement to that effect before *any* downloading is enabled (enforced in the engine, not just the UI). Publishing or using this does not grant you any rights to copyrighted material. See [Legal](#legal).
+
+---
+
+## Screenshots
+
+### Native macOS app
+
+A fully native SwiftUI front-end (dark, OLED-black) — same engine, JSON API, and features as the web UI.
+
+| Dashboard | Library |
+|:---:|:---:|
+| [![Plexify macOS app — Dashboard](docs/screenshots/mac-dashboard.png)](docs/screenshots/mac-dashboard.png) | [![Plexify macOS app — Library](docs/screenshots/mac-library.png)](docs/screenshots/mac-library.png) |
+
+### Web UI
+
+Served by the engine — everything the native app does, in the browser.
+
+| Dashboard | Library |
+|:---:|:---:|
+| [![Plexify web UI — Dashboard](docs/screenshots/web-dashboard.png)](docs/screenshots/web-dashboard.png) | [![Plexify web UI — Library](docs/screenshots/web-library.png)](docs/screenshots/web-library.png) |
 
 ---
 

@@ -42,8 +42,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         host.autoresizingMask = [.width, .height]
         window.contentView = host
         window.delegate = self
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Launched with --minimized (by the login LaunchAgent): run in the background — the engine
+        // and polling stay active, but don't show a window or steal focus. Click the Dock icon to
+        // reveal it (applicationShouldHandleReopen orders the window front on demand).
+        if !CommandLine.arguments.contains("--minimized") {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         store.start()
     }

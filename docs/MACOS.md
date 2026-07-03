@@ -31,6 +31,27 @@ defaults to `com.plexify.app`.
 
 Packaging a self-contained `.app` (bundling the engine + venv) is planned.
 
+### Launch at login, in the background
+
+Pass `--minimized` to run the app with **no window and without stealing focus** — the engine and
+polling start, but nothing appears until you click the Dock icon. To auto-start it that way at
+login, add a LaunchAgent at `~/Library/LaunchAgents/com.<you>.plexify.plist`:
+
+```xml
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.you.plexify</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/open</string><string>-g</string>
+    <string>/path/to/Plexify.app</string><string>--args</string><string>--minimized</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+```
+
+Then `launchctl load -w ~/Library/LaunchAgents/com.you.plexify.plist`. (`open -g` launches it in the
+background; `--minimized` keeps its window hidden. Click the Dock icon any time to open it.)
+
 ## Mac + NAS split
 
 The split is **the exact same code** as the single-host deployment — one engine image, one

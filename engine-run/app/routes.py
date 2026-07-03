@@ -3337,6 +3337,55 @@ def api_settings():
             set_config("autostar_manage_enabled", "1" if data.get("autostar_manage_enabled") else "0")
         if "autostar_dry_run" in data:
             set_config("autostar_dry_run", "1" if data.get("autostar_dry_run") else "0")
+        # --- Connections + sources config (mirrors the web Settings forms) ---
+        # Secrets: a blank/absent value KEEPS the saved one; a non-empty value replaces it.
+        for _sk in ("slskd_api_key", "anthropic_api_key", "telegram_api_hash", "telegram_session"):
+            if _sk in data:
+                _sv = str(data.get(_sk) or "").strip()
+                if _sv:
+                    set_config(_sk, _sv)
+        if "spotiflac_qobuz_token" in data:   # supports explicit clear via "__clear__"
+            _qv = str(data.get("spotiflac_qobuz_token") or "").strip()
+            if _qv == "__clear__":
+                set_config("spotiflac_qobuz_token", "")
+            elif _qv:
+                set_config("spotiflac_qobuz_token", _qv)
+        # Plain text / url / number config.
+        for _tk in ("plex_library_path", "slskd_url", "anthropic_model", "telegram_api_id"):
+            if _tk in data:
+                set_config(_tk, str(data.get(_tk) or "").strip())
+        # Boolean toggles.
+        for _bk in ("telegram_enabled", "smart_update_enabled", "self_repair_bypass",
+                    "autofill_picker_enabled", "autofill_strict_flac",
+                    "autofill_allow_mp3_fallback", "autofill_allow_cd_quality"):
+            if _bk in data:
+                set_config(_bk, "1" if data.get(_bk) else "0")
+        if "autofill_acquisition_mode" in data:
+            _m = str(data.get("autofill_acquisition_mode") or "album")
+            if _m in ("song", "album", "discography"):
+                set_config("autofill_acquisition_mode", _m)
+        # Catalog-source toggles live in the autofill_sources_json list (preserve playlist:* entries).
+        if "source_liked" in data or "source_followed_artists" in data:
+            try:
+                _cur = set(_json.loads(get_config("autofill_sources_json") or "[]"))
+            except Exception:
+                _cur = set()
+            if "source_liked" in data:
+                _cur.discard("liked")
+                if data.get("source_liked"):
+                    _cur.add("liked")
+            if "source_followed_artists" in data:
+                _cur.discard("followed_artists")
+                if data.get("source_followed_artists"):
+                    _cur.add("followed_artists")
+            set_config("autofill_sources_json", _json.dumps(sorted(_cur)))
+        # Risky "gated" fields — only applied when Self-repair is unlocked (FULL or bypass),
+        # mirroring the web UI's lock so a bad edit can't silently break a source.
+        _full = (get_config("smart_update_enabled", "0") == "1") and bool(get_config("anthropic_api_key", ""))
+        if _full or (get_config("self_repair_bypass", "0") == "1"):
+            for _gk in ("squid_base", "spotiflac_repo", "telegram_bot"):
+                if _gk in data:
+                    set_config(_gk, str(data.get(_gk) or "").strip())
         return jsonify({"ok": True})
 
     def _b(key, default="0"):
@@ -3395,6 +3444,32 @@ def api_settings():
         "autostar_manage_enabled": _b("autostar_manage_enabled"),
         "autostar_dry_run": _b("autostar_dry_run"),
         "ownership_attested": _b("ownership_attested"),
+        # Connections (secrets masked → only whether they're set)
+        "plex_library_path": get_config("plex_library_path", "/plexify-music") or "/plexify-music",
+        "slskd_api_key_set": bool(get_config("slskd_api_key", "")),
+        "squid_base": get_config("squid_base", "https://qobuz.squid.wtf") or "",
+        "spotiflac_repo": get_config("spotiflac_repo", "ShuShuzinhuu/SpotiFLAC-Module-Version") or "",
+        "spotiflac_qobuz_token_set": bool(get_config("spotiflac_qobuz_token", "")),
+        "telegram_api_id": get_config("telegram_api_id", "") or "",
+        "telegram_api_hash_set": bool(get_config("telegram_api_hash", "")),
+        "telegram_session_set": bool(get_config("telegram_session", "")),
+        "telegram_bot": get_config("telegram_bot", "@BeatSpotBot") or "",
+        # Self-repair
+        "self_repair_bypass": _b("self_repair_bypass"),
+        "smart_update_enabled": _b("smart_update_enabled"),
+        "anthropic_api_key_set": bool(get_config("anthropic_api_key", "")),
+        "anthropic_model": get_config("anthropic_model", "claude-opus-4-8") or "",
+        "self_repair_full": _b("smart_update_enabled") and bool(get_config("anthropic_api_key", "")),
+        # Downloading
+        "autofill_picker_enabled": _b("autofill_picker_enabled"),
+        "autofill_acquisition_mode": get_config("autofill_acquisition_mode", "album") or "album",
+        "autofill_strict_flac": _b("autofill_strict_flac", "1"),
+        "autofill_allow_mp3_fallback": _b("autofill_allow_mp3_fallback"),
+        "autofill_allow_cd_quality": _b("autofill_allow_cd_quality"),
+        "source_liked": ("liked" in sources),
+        "source_followed_artists": ("followed_artists" in sources),
+        # Appearance
+        "liked_songs_cover": get_config("liked_songs_cover", "star") or "star",
     })
 
 

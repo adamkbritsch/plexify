@@ -197,6 +197,21 @@ final class PlexifyStore: ObservableObject {
     // MARK: - settings
 
     func loadSettings() async { settings = await get("/api/settings") }
+    func setLikedCover(_ which: String) async {
+        _ = await postForm("/settings/liked-cover", "which=\(which)")
+        lastAction = "Cover set to \(which)"; await loadSettings()
+    }
+    // POST an action endpoint and return its JSON body (test buttons, SpotiFLAC update).
+    func postAction(_ path: String, timeout: TimeInterval = 20) async -> [String: Any] {
+        guard let url = URL(string: base + path) else { return [:] }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"; req.timeoutInterval = timeout
+        req.setValue("fetch", forHTTPHeaderField: "X-Requested-With")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
+        } catch { return [:] }
+    }
     func saveSettings(_ body: [String: Any]) async {
         await postJSON("/api/settings", body); lastAction = "Settings saved"; await loadSettings()
     }

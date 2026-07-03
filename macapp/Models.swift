@@ -304,6 +304,33 @@ struct SettingsDTO: Codable {
     var nas_downloader_url: String?
     var autostar_manage_enabled: Bool?
     var autostar_dry_run: Bool?
+    var ownership_attested: Bool?
+    // Connections (secrets masked → *_set booleans)
+    var plex_library_path: String?
+    var slskd_api_key_set: Bool?
+    var squid_base: String?
+    var spotiflac_repo: String?
+    var spotiflac_qobuz_token_set: Bool?
+    var telegram_api_id: String?
+    var telegram_api_hash_set: Bool?
+    var telegram_session_set: Bool?
+    var telegram_bot: String?
+    // Self-repair
+    var self_repair_bypass: Bool?
+    var smart_update_enabled: Bool?
+    var anthropic_api_key_set: Bool?
+    var anthropic_model: String?
+    var self_repair_full: Bool?
+    // Downloading
+    var autofill_picker_enabled: Bool?
+    var autofill_acquisition_mode: String?
+    var autofill_strict_flac: Bool?
+    var autofill_allow_mp3_fallback: Bool?
+    var autofill_allow_cd_quality: Bool?
+    var source_liked: Bool?
+    var source_followed_artists: Bool?
+    // Appearance
+    var liked_songs_cover: String?
 }
 
 // MARK: - Unmatched (/api/unmatched — new endpoint)

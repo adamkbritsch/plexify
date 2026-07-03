@@ -3928,13 +3928,23 @@ def picker_tick() -> dict:
     target = None
     _max_attempts = _max_picker_attempts()
     with session_scope() as s:
-        candidates = list(s.scalars(
-            select(AutofillAction)
-            .where(AutofillAction.status == "queued")
-            .where((AutofillAction.attempt_count == None) | (AutofillAction.attempt_count < _max_attempts))
-            .order_by(AutofillAction.last_attempt_at)
-            .limit(50)
+        _base = (select(AutofillAction)
+                 .where(AutofillAction.status == "queued")
+                 .where((AutofillAction.attempt_count == None) | (AutofillAction.attempt_count < _max_attempts)))
+        # PRIORITIZE NEW ADDITIONS: never-attempted rows first, NEWEST-queued first — a song that
+        # just showed up at the end of a playlist / Liked Songs is tried immediately instead of
+        # waiting behind the backlog. Then the retry backlog, oldest-attempted first (unchanged).
+        fresh = list(s.scalars(
+            _base.where((AutofillAction.attempt_count == None) | (AutofillAction.attempt_count == 0))
+                 .order_by(AutofillAction.created_at.desc())
+                 .limit(50)
         ).all())
+        backlog = list(s.scalars(
+            _base.where(AutofillAction.attempt_count > 0)
+                 .order_by(AutofillAction.last_attempt_at.asc())
+                 .limit(50)
+        ).all())
+        candidates = fresh + backlog
         with _ACQUISITION_LOCK:
             in_flight_ids = set(CURRENT_ACQUISITIONS.keys())
         candidates = [c for c in candidates if c.id not in in_flight_ids]

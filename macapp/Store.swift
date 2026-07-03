@@ -35,6 +35,8 @@ final class PlexifyStore: ObservableObject {
     @Published var settings: SettingsDTO?
     @Published var unmatched: [UnmatchedTrackDTO] = []
     @Published var unmatchedTotal = 0
+    @Published var suggestions: [UnmatchedSuggestionDTO] = []
+    @Published var suggestorInfo: UnmatchedSuggestionsDTO?
 
     // control bar
     @Published var fill: FillBalanceDTO?
@@ -225,6 +227,21 @@ final class PlexifyStore: ObservableObject {
         }
     }
     func clearUnmatched() async { await post("/unmatched/clear"); await loadUnmatched() }
+
+    func loadSuggestions() async {
+        if let d: UnmatchedSuggestionsDTO = await get("/api/unmatched/suggestions") {
+            suggestorInfo = d
+            suggestions = d.suggestions ?? []
+        }
+    }
+    func dismissSuggestion(_ artistKey: String) async {
+        await post("/api/unmatched/suggestions/dismiss?artist=\(esc(artistKey))")
+        await loadSuggestions()
+    }
+    func requeueSuggestion(_ artistKey: String) async {
+        await post("/api/unmatched/suggestions/requeue?artist=\(esc(artistKey))")
+        lastAction = "Re-queued for auto-acquire"; await loadSuggestions()
+    }
 
     // MARK: - transport
 

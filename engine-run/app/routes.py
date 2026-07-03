@@ -3351,13 +3351,16 @@ def api_settings():
             elif _qv:
                 set_config("spotiflac_qobuz_token", _qv)
         # Plain text / url / number config.
-        for _tk in ("plex_library_path", "slskd_url", "anthropic_model", "telegram_api_id"):
+        for _tk in ("plex_library_path", "slskd_url", "anthropic_model", "telegram_api_id",
+                    "manual_import_path"):
             if _tk in data:
                 set_config(_tk, str(data.get(_tk) or "").strip())
         # Boolean toggles.
         for _bk in ("telegram_enabled", "smart_update_enabled", "self_repair_bypass",
                     "autofill_picker_enabled", "autofill_strict_flac",
-                    "autofill_allow_mp3_fallback", "autofill_allow_cd_quality"):
+                    "autofill_allow_mp3_fallback", "autofill_allow_cd_quality",
+                    "manual_import_enabled", "manual_import_delete_unnecessary",
+                    "manual_import_dry_run", "manual_import_require_liked"):
             if _bk in data:
                 set_config(_bk, "1" if data.get(_bk) else "0")
         if "autofill_acquisition_mode" in data:
@@ -3470,7 +3473,82 @@ def api_settings():
         "source_followed_artists": ("followed_artists" in sources),
         # Appearance
         "liked_songs_cover": get_config("liked_songs_cover", "star") or "star",
+        # Manual import
+        "manual_import_enabled": _b("manual_import_enabled"),
+        "manual_import_path": get_config("manual_import_path",
+                                         "/Volumes/MediaVolume3/Downloads/music/import") or "",
+        "manual_import_delete_unnecessary": _b("manual_import_delete_unnecessary"),
+        "manual_import_dry_run": _b("manual_import_dry_run"),
+        "manual_import_require_liked": _b("manual_import_require_liked"),
     })
+
+
+@bp.route("/api/unmatched/suggestions")
+def api_unmatched_suggestions():
+    """Ranked 'acquire this artist → +coverage' suggestions (the smart suggestor)."""
+    from flask import jsonify, request
+    from . import suggestor
+    try:
+        min_tracks = max(1, int(request.args.get("min_tracks",
+                                                  get_config("suggestor_min_tracks", "3") or 3)))
+    except (TypeError, ValueError):
+        min_tracks = 3
+    try:
+        limit = max(1, min(100, int(request.args.get("limit", 25))))
+    except (TypeError, ValueError):
+        limit = 25
+    try:
+        return jsonify(suggestor.coverage_gap_suggestions(min_tracks=min_tracks, limit=limit))
+    except Exception as e:
+        log.exception("suggestions failed")
+        return jsonify({"suggestions": [], "current_coverage_pct": 0, "wanted_total": 0,
+                        "covered_total": 0, "error": str(e)[:200]})
+
+
+@bp.route("/api/unmatched/suggestions/dismiss", methods=["POST"])
+def api_unmatched_suggestions_dismiss():
+    from flask import jsonify, request
+    from . import suggestor
+    ak = request.args.get("artist") or (request.get_json(silent=True) or {}).get("artist") or ""
+    return jsonify(suggestor.dismiss_artist(ak))
+
+
+@bp.route("/api/unmatched/suggestions/requeue", methods=["POST"])
+def api_unmatched_suggestions_requeue():
+    from flask import jsonify, request
+    from . import suggestor
+    ak = request.args.get("artist") or (request.get_json(silent=True) or {}).get("artist") or ""
+    try:
+        return jsonify(suggestor.requeue_artist(ak))
+    except Exception as e:
+        log.exception("requeue failed")
+        return jsonify({"ok": False, "error": str(e)[:200]})
+
+
+@bp.route("/manual-import/preview", methods=["POST"])
+def manual_import_preview():
+    """Dry-run the import folder: classify everything, move/delete NOTHING, return the tally."""
+    from flask import jsonify
+    from . import import_folder
+    try:
+        return jsonify({"ok": True, **import_folder.manual_import_scan(dry_run=True)})
+    except Exception as e:
+        log.exception("manual import preview failed")
+        return jsonify({"ok": False, "error": str(e)[:200]})
+
+
+@bp.route("/manual-import/scan", methods=["POST"])
+def manual_import_scan_route():
+    """Run the import for real: sort keepers into the library, discard the rest."""
+    from flask import jsonify
+    from . import import_folder
+    if not import_folder.manual_import_enabled():
+        return jsonify({"ok": False, "error": "manual import is off — enable it first"})
+    try:
+        return jsonify({"ok": True, **import_folder.manual_import_scan(dry_run=False)})
+    except Exception as e:
+        log.exception("manual import scan failed")
+        return jsonify({"ok": False, "error": str(e)[:200]})
 
 
 @bp.route("/api/unmatched")

@@ -295,6 +295,15 @@ scheduler.add_job(
     id="autostar_unstar_detect", max_instances=1, coalesce=True, misfire_grace_time=120,
 )
 
+# MANUAL IMPORT (feature-flagged, default off): scan the user's import drop-folder, sort good FLAC
+# into the library, discard junk (delete or quarantine per the toggle). No-op unless
+# manual_import_enabled=1; only runs when PLEXIFY_START_SCHEDULER=1.
+from .import_folder import manual_import_scan_tick
+scheduler.add_job(
+    manual_import_scan_tick, "interval", minutes=2,
+    id="manual_import_scan", max_instances=1, coalesce=True, misfire_grace_time=60,
+)
+
 # PLAYLIST RECOMPILER: nightly reorder of every Plex playlist into Spotify source order
 # (decoupled, from the local cache). Intensive → runs once a night at 4am.
 scheduler.add_job(

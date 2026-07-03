@@ -331,6 +331,12 @@ struct SettingsDTO: Codable {
     var source_followed_artists: Bool?
     // Appearance
     var liked_songs_cover: String?
+    // Manual import
+    var manual_import_enabled: Bool?
+    var manual_import_path: String?
+    var manual_import_delete_unnecessary: Bool?
+    var manual_import_dry_run: Bool?
+    var manual_import_require_liked: Bool?
 }
 
 // MARK: - Unmatched (/api/unmatched — new endpoint)
@@ -351,4 +357,24 @@ struct UnmatchedDTO: Codable {
     var total: Int?
     var shown: Int?
     var limit: Int?
+}
+
+// MARK: - Suggestor (/api/unmatched/suggestions)
+
+struct UnmatchedSuggestionDTO: Codable, Identifiable, Hashable {
+    var artist: String?
+    var artist_key: String?
+    var missing_count: Int?
+    var needs_manual_count: Int?
+    var coverage_gain_pct: Double?
+    var missing_albums: [String]?
+    var sample_titles: [String]?
+    var id: String { artist_key ?? artist ?? "" }
+}
+
+struct UnmatchedSuggestionsDTO: Codable {
+    var suggestions: [UnmatchedSuggestionDTO]?
+    var current_coverage_pct: Int?
+    var wanted_total: Int?
+    var covered_total: Int?
 }

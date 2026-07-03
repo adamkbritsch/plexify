@@ -1,6 +1,57 @@
 {% extends "base.html" %}
 {% block title %}Unmatched — Plexify{% endblock %}
 {% block content %}
+<section class="card" id="suggestions-card">
+  <h1>Get these next</h1>
+  <p class="muted small" id="sugg-coverage">…</p>
+  <p class="muted small">Ranked by how much each artist would raise your Plex coverage. “Need manual” = the automated sources gave up — grab those and drop them in your import folder.</p>
+  <div id="sugg-list"><p class="muted small">Loading…</p></div>
+</section>
+<style>
+.sugg-row{display:flex;align-items:flex-start;gap:14px;padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:rgba(255,255,255,0.02)}
+.sugg-main{flex:1;min-width:0}
+.sugg-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sugg-badge{font-size:11px;font-weight:600;padding:1px 7px;border:1px solid var(--plex,#ebaf00);color:var(--plex,#ebaf00);border-radius:4px}
+.sugg-badge.manual{border-color:#ffb000;color:#ffb000}
+.sugg-albums{color:var(--muted);font-size:11px;margin-top:4px}
+.sugg-actions{display:flex;flex-direction:column;gap:6px}
+</style>
+<script>
+(function(){
+  const list=document.getElementById('sugg-list'), cov=document.getElementById('sugg-coverage');
+  async function load(){
+    let d;
+    try{ d=await (await fetch('/api/unmatched/suggestions',{cache:'no-store'})).json(); }
+    catch(e){ list.innerHTML='<p class="muted small">Couldn\'t load suggestions.</p>'; return; }
+    cov.textContent=(d.covered_total||0)+' of '+(d.wanted_total||0)+' wanted songs in Plex · '+(d.current_coverage_pct||0)+'% coverage';
+    const s=d.suggestions||[];
+    if(!s.length){ list.innerHTML='<p class="muted small">No gaps to suggest right now.</p>'; return; }
+    const max=Math.max(1,...s.map(x=>x.missing_count||0));
+    list.innerHTML=s.map(function(x){
+      const gain=(x.coverage_gain_pct>=1)?Math.round(x.coverage_gain_pct):x.coverage_gain_pct;
+      const manual=(x.needs_manual_count||0)>0?'<span class="sugg-badge manual">'+x.needs_manual_count+' need manual</span>':'';
+      const albums=(x.missing_albums||[]).length?'<div class="sugg-albums">'+plxEsc((x.missing_albums||[]).join(' · '))+'</div>':'';
+      const w=Math.round(100*(x.missing_count||0)/max);
+      return '<div class="sugg-row" data-artist="'+plxEsc(x.artist_key||'')+'"><div class="sugg-main">'
+        +'<div class="sugg-head"><span style="font-weight:600">'+plxEsc(x.artist||'?')+'</span>'
+        +'<span class="sugg-badge">+'+gain+'%</span>'+manual+'</div>'
+        +'<div class="muted small">'+(x.missing_count||0)+' missing tracks</div>'
+        +'<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:2px;margin-top:5px"><div style="height:5px;width:'+w+'%;background:var(--plex,#ebaf00);border-radius:2px"></div></div>'
+        +albums+'</div><div class="sugg-actions">'
+        +'<button class="btn small" data-act="requeue">Re-try auto</button>'
+        +'<button class="btn ghost small" data-act="dismiss">Dismiss</button></div></div>';
+    }).join('');
+  }
+  list.addEventListener('click', async function(e){
+    const b=e.target.closest('button[data-act]'); if(!b) return;
+    const artist=b.closest('.sugg-row').dataset.artist; b.disabled=true;
+    try{ await fetch('/api/unmatched/suggestions/'+b.dataset.act+'?artist='+encodeURIComponent(artist),{method:'POST',headers:{'X-Requested-With':'fetch'}}); }catch(_){}
+    load();
+  });
+  load();
+})();
+</script>
+
 <section class="card">
   <div class="row between">
     <h1>Unmatched tracks</h1>

@@ -28,7 +28,7 @@ COPY downloader_daemon.py ./
 # Data dir + music/downloads mount points. The engine's historical hardcoded paths
 # (/Volumes/MediaVolume3/…) and the daemon's (/downloads_music) are symlinked onto the
 # clean container mounts /music + /downloads so docker-compose can use tidy volume paths.
-RUN mkdir -p /data /music /downloads /Volumes/MediaVolume3/Downloads \
+RUN mkdir -p /data /music /downloads /downloads/import /Volumes/MediaVolume3/Downloads \
     && ln -sfn /music /Volumes/MediaVolume3/plexify-music \
     && ln -sfn /downloads /Volumes/MediaVolume3/Downloads/music \
     && ln -sfn /downloads /downloads_music \

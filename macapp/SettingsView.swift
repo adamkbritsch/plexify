@@ -47,6 +47,13 @@ struct SettingsView: View {
     // Plex stars
     @State private var autostarEnabled = false
     @State private var autostarDryRun = false
+    // Music import
+    @State private var importEnabled = false
+    @State private var importPath = "/Volumes/MediaVolume3/Downloads/music/import"
+    @State private var importDelete = false
+    @State private var importRequireLiked = false
+    @State private var importStatus = ""
+    @State private var importScanning = false
 
     private var unlocked: Bool { selfRepairBypass || (store.settings?.self_repair_full ?? false) }
 
@@ -67,6 +74,7 @@ struct SettingsView: View {
                 telegramCard
                 selfRepairCard
                 downloadingCard
+                musicImportCard
                 plexStarsCard
                 appearanceCard
                 storagePathsCard
@@ -249,6 +257,61 @@ struct SettingsView: View {
         }
     }
 
+    private var musicImportCard: some View {
+        Section2(title: "Music import", badge: importEnabled ? "ON" : "OFF",
+                 help: "Drop music into a folder and Plexify sorts the good FLAC into your library (even if it isn't a liked song), discarding the junk. This closes the gaps the automated sources can't get — see the Unmatched tab's suggestions for what to grab.") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $importEnabled) {
+                    label2("Enable music import", "auto-scans the import folder every couple of minutes")
+                }.toggleStyle(.switch).tint(PX.plex)
+                FieldLabel("Import folder", help: "where you drop files (on the NAS share)")
+                pxTF($importPath, "/Volumes/MediaVolume3/Downloads/music/import")
+                Toggle(isOn: $importDelete) {
+                    label2("Delete unnecessary music", "permanently delete junk / lossy / duplicates instead of quarantining them to _unnecessary/. Off = recoverable.")
+                }.toggleStyle(.switch).tint(importDelete ? PX.danger : PX.plex)
+                Toggle(isOn: $importRequireLiked) {
+                    label2("Only import music in my Spotify", "stricter — also discard FLAC that doesn't match a liked / playlist song")
+                }.toggleStyle(.switch).tint(PX.plex)
+                HStack(spacing: 12) {
+                    Button { runImport(dry: true) } label: { Text("Preview") }
+                        .buttonStyle(GhostButtonStyle()).disabled(importScanning)
+                    Button { runImport(dry: false) } label: { Text("Scan now") }
+                        .buttonStyle(PrimaryButtonStyle()).disabled(importScanning || !importEnabled)
+                    if !importStatus.isEmpty {
+                        Text(importStatus).font(.system(size: 12)).foregroundStyle(PX.text2).lineLimit(2)
+                    }
+                }
+            }
+        }
+    }
+
+    private func runImport(dry: Bool) {
+        importScanning = true
+        importStatus = dry ? "previewing…" : "scanning…"
+        Task {
+            // persist the current toggles first so the scan honors them
+            await store.saveSettings([
+                "manual_import_enabled": importEnabled, "manual_import_path": importPath,
+                "manual_import_delete_unnecessary": importDelete,
+                "manual_import_require_liked": importRequireLiked,
+            ])
+            let d = await store.postAction(dry ? "/manual-import/preview" : "/manual-import/scan", timeout: 180)
+            if d["ok"] as? Bool == true {
+                let imp = d["imported"] as? Int ?? 0, up = d["upgraded"] as? Int ?? 0
+                let del = d["deleted"] as? Int ?? 0, q = d["quarantined"] as? Int ?? 0
+                let sc = d["scanned"] as? Int ?? 0
+                let by = (d["by_reason"] as? [String: Any])?
+                    .map { "\($0.key) \($0.value)" }.sorted().joined(separator: ", ") ?? ""
+                importStatus = dry
+                    ? "would import \(imp)\(up > 0 ? " (+\(up) upgrade)" : "") of \(sc) scanned — \(by)"
+                    : "imported \(imp), \(up) upgraded, \(del) deleted, \(q) quarantined"
+            } else {
+                importStatus = (d["error"] as? String) ?? "failed"
+            }
+            importScanning = false
+        }
+    }
+
     private var plexStarsCard: some View {
         Section2(title: "Plex stars",
                  help: "Auto-★ every placed track. Un-star a song in Plex/Plexamp to flag it wrong — Plexify attics it, blacklists that source, and re-acquires the correct copy.") {
@@ -356,6 +419,10 @@ struct SettingsView: View {
         sourceFollowed = s.source_followed_artists ?? false
         autostarEnabled = s.autostar_manage_enabled ?? false
         autostarDryRun = s.autostar_dry_run ?? false
+        importEnabled = s.manual_import_enabled ?? false
+        importPath = s.manual_import_path ?? "/Volumes/MediaVolume3/Downloads/music/import"
+        importDelete = s.manual_import_delete_unnecessary ?? false
+        importRequireLiked = s.manual_import_require_liked ?? false
         loaded = true
     }
 
@@ -380,6 +447,10 @@ struct SettingsView: View {
             "source_followed_artists": sourceFollowed,
             "autostar_manage_enabled": autostarEnabled,
             "autostar_dry_run": autostarDryRun,
+            "manual_import_enabled": importEnabled,
+            "manual_import_path": importPath,
+            "manual_import_delete_unnecessary": importDelete,
+            "manual_import_require_liked": importRequireLiked,
         ]
         // gated fields — only send when unlocked (server also enforces this)
         if unlocked {

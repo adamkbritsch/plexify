@@ -124,6 +124,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func reloadUI() { Task { await store.refreshAll() } }
 
+    // Close (red button / ⌘W) and a plain user ⌘Q both MINIMIZE — the app keeps running in the
+    // background (engine + polling stay alive). A system logout/shutdown/restart, or a SIGTERM
+    // from a deploy/relaunch, still quits it normally.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.miniaturize(nil)
+        return false
+    }
+    func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
+        // Let the SYSTEM through: a logout/shutdown/restart quit event carries a 'why?' attribute.
+        // Only a plain user ⌘Q (no quit reason) is converted to minimize.
+        if let evt = NSAppleEventManager.shared().currentAppleEvent,
+           evt.attributeDescriptor(forKeyword: AEKeyword(0x7768793F)) != nil {   // 'why?'
+            return .terminateNow
+        }
+        window.miniaturize(nil)
+        return .terminateCancel
+    }
     func applicationWillTerminate(_ notification: Notification) {
         engine?.terminate()
         let pk = Process()
@@ -131,9 +148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pk.arguments = ["-f", "gunicorn.*app.main:app"]
         try? pk.run()
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { window.makeKeyAndOrderFront(nil) }
+        if !flag { window.makeKeyAndOrderFront(nil); window.deminiaturize(nil) }
         return true
     }
 }

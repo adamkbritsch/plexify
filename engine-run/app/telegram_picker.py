@@ -512,8 +512,15 @@ def acquire(spotify_url=None, *, artist=None, album=None, sample_song=None,
 # inside the daemon on the NAS. (engine/ holds the pristine copy.)
 # ═══════════════════════════════════════════════════════════════════════════
 
+_real_acquire = acquire
+
+
 def acquire(spotify_url=None, *, artist=None, album=None, sample_song=None,
             dest_dir=None, flac_only=True, timeout_seconds=180):
+    if os.environ.get("PLEXIFY_DOWNLOADER_DAEMON") == "1":
+        return _real_acquire(spotify_url, artist=artist, album=album,
+                             sample_song=sample_song, dest_dir=dest_dir,
+                             flac_only=flac_only, timeout_seconds=timeout_seconds)
     from .nas_downloader import enqueue_and_wait
     return enqueue_and_wait("telegram", mode="album", dest_dir=dest_dir,
                             artist=artist, album=album, sample_song=sample_song,

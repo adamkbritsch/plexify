@@ -30,7 +30,14 @@ services:
       - NAS_DOWNLOADER_HOSTS=http://plexify-downloader:8788
       - DOWNLOADER_TOKEN=${DOWNLOADER_TOKEN:-}
     volumes:
-      - ${DATA_DIR:-./data}:/data
+      # Named volume, NOT a host bind mount, on purpose: a fresh `docker compose up`
+      # would create ./data as root:root, which the image's USER 1000:10 cannot write —
+      # crash-looping the container. A named volume inherits the image's 1000:10
+      # ownership. To use a host path instead, replace with `- /your/path:/data` and
+      # run `chown -R 1000:10 /your/path` first.
+      - plexify-data:/data
+      # MUSIC_DIR / DOWNLOADS_DIR are your existing folders — they must be writable by
+      # uid 1000 / gid 10 (the container's user). On most NAS/Plex setups they already are.
       - ${MUSIC_DIR:?set MUSIC_DIR in .env — your Plex music library folder}:/music
       - ${DOWNLOADS_DIR:?set DOWNLOADS_DIR in .env — a working/download folder}:/downloads
 
@@ -47,8 +54,18 @@ services:
       - DATA_DIR=/data                    # the daemon's OWN tiny config DB (never plexify.db)
       - DOWNLOADER_TOKEN=${DOWNLOADER_TOKEN:-}
       - DOWNLOADER_PORT=8788
+    # The image's baked HEALTHCHECK probes 8787 (the engine's port); this daemon listens
+    # on 8788, so override it to hit the daemon's own /healthz — otherwise the container
+    # is permanently marked "unhealthy".
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     volumes:
-      - ${DOWNLOADER_DATA_DIR:-./downloader-data}:/data
+      # Named volume for the same root:root reason as the engine's /data (see above).
+      - plexify-downloader-data:/data
       - ${DOWNLOADS_DIR:?set DOWNLOADS_DIR in .env}:/downloads
 
   # ── Optional sources — uncomment to run them alongside Plexify ──────────────────────
@@ -69,3 +86,10 @@ services:
   #   environment: ["PUID=1000", "PGID=10", "TZ=Etc/UTC"]
   #   volumes: ["./lidarr-config:/config", "${MUSIC_DIR}:/music", "${DOWNLOADS_DIR}:/downloads"]
   #   # then in the wizard set Lidarr URL = http://plexify-lidarr:8686
+
+# Named volumes hold each service's small config DB (plexify.db / the daemon's queue).
+# They come up owned by the image's uid 1000 / gid 10 so the non-root container can write
+# them; a plain `./data` host bind mount would be root-owned and crash on first run.
+volumes:
+  plexify-data:
+  plexify-downloader-data:

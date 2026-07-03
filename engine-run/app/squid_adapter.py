@@ -355,8 +355,16 @@ def acquire(spotify_url=None, *, track_ids=None, artist=None, album=None, sample
 # inside the daemon on the NAS. (engine/ holds the pristine copy.)
 # ═══════════════════════════════════════════════════════════════════════════
 
+_real_acquire = acquire
+_real_acquire_track = acquire_track
+
+
 def acquire(spotify_url=None, *, track_ids=None, artist=None, album=None,
             sample_song=None, dest_dir=None, flac_only=True, timeout_seconds=120):
+    if os.environ.get("PLEXIFY_DOWNLOADER_DAEMON") == "1":
+        return _real_acquire(spotify_url, track_ids=track_ids, artist=artist,
+                             album=album, sample_song=sample_song, dest_dir=dest_dir,
+                             flac_only=flac_only, timeout_seconds=timeout_seconds)
     from .nas_downloader import enqueue_and_wait
     r = enqueue_and_wait("squid", mode="album", dest_dir=dest_dir,
                          artist=artist, album=album, sample_song=sample_song,
@@ -370,6 +378,9 @@ def acquire(spotify_url=None, *, track_ids=None, artist=None, album=None,
 
 def acquire_track(artist=None, title=None, dest_dir=None, flac_only=True,
                   timeout_seconds=60):
+    if os.environ.get("PLEXIFY_DOWNLOADER_DAEMON") == "1":
+        return _real_acquire_track(artist=artist, title=title, dest_dir=dest_dir,
+                                   flac_only=flac_only, timeout_seconds=timeout_seconds)
     from .nas_downloader import enqueue_and_wait
     r = enqueue_and_wait("squid", mode="track", dest_dir=dest_dir,
                          artist=artist, title=title,

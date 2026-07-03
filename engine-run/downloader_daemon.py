@@ -24,9 +24,11 @@ HTTP API (:8788, optional bearer via DOWNLOADER_TOKEN):
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -37,8 +39,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 log = logging.getLogger("downloader")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s downloader :: %(message)s")
 
+# Identify this process as the NAS downloader so the source adapters run their REAL
+# near-storage download implementations instead of delegating back to this daemon
+# (their public acquire* names are otherwise the Mac-engine delegation stubs).
+os.environ.setdefault("PLEXIFY_DOWNLOADER_DAEMON", "1")
+
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 QUEUE_DIR = os.path.join(DATA_DIR, "queue")
+# Job ids are "YYYYMMDD-HHMMSS-<hex>" — restrict lookups to that alphabet so a
+# crafted /job/<id> can't traverse out of the queue dir (e.g. /job/../../seed_config).
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 STAGING_ROOT = os.environ.get("STAGING_ROOT", "/downloads_music/staging")
 PORT = int(os.environ.get("DOWNLOADER_PORT", "8788"))
 TOKEN = os.environ.get("DOWNLOADER_TOKEN", "")
@@ -346,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         if not TOKEN:
             return True
-        return self.headers.get("Authorization", "") == "Bearer " + TOKEN
+        return hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + TOKEN)
 
     def do_GET(self):
         counts = {st: len([f for f in (os.listdir(os.path.join(QUEUE_DIR, st))
@@ -359,7 +369,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/queue":
             return self._send(200, {"jobs": _all_jobs(), **counts})
         if self.path.startswith("/job/"):
-            job = _find_job(self.path[5:].strip("/"))
+            jid = self.path[5:].strip("/")
+            if not _JOB_ID_RE.match(jid):
+                return self._send(400, {"error": "bad job id"})
+            job = _find_job(jid)
             return self._send(200, job) if job else self._send(404, {"error": "not found"})
         return self._send(404, {"error": "not found"})
 
@@ -399,6 +412,14 @@ def main():
     from app.db import init_db
     init_db()  # the daemon's OWN fresh DB (config only) — never plexify.db
     _seed_config()
+    # Patch SpotiFLAC-main's recurring 'NameError: Optional' regression before any
+    # spotiflac job imports it. The engine does this in app.main; the daemon never
+    # loads app.main, so it must patch here too.
+    try:
+        from app.autofill_engine import patch_spotiflac_future_annotations as _patch_sf
+        _patch_sf()
+    except Exception:
+        log.exception("SpotiFLAC startup patch failed (continuing)")
     # crash recovery: anything left 'running' goes back to the queue
     rdir = os.path.join(QUEUE_DIR, "running")
     for fn in list(os.listdir(rdir)):

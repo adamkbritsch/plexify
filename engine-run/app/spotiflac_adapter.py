@@ -253,8 +253,14 @@ def acquire(
 # inside the daemon on the NAS. (engine/ holds the pristine copy.)
 # ═══════════════════════════════════════════════════════════════════════════
 
+_real_acquire = acquire
+
+
 def acquire(spotify_url, dest_dir, services=None, quality="HI_RES_LOSSLESS",
             timeout_seconds=600):
+    if os.environ.get("PLEXIFY_DOWNLOADER_DAEMON") == "1":
+        return _real_acquire(spotify_url, dest_dir, services=services,
+                             quality=quality, timeout_seconds=timeout_seconds)
     from .nas_downloader import enqueue_and_wait
     kw = {"quality": quality, "timeout_seconds": timeout_seconds}
     if services is not None:

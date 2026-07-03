@@ -28,8 +28,9 @@ app.register_blueprint(bp)
 init_db()
 
 # Self-heal SpotiFLAC-main's recurring 'NameError: Optional' regression at startup,
-# BEFORE anything imports SpotiFLAC. Patches the auto-update's user-site copy if present
-# (the baked /usr/local copy is patched at build time in the Dockerfile).
+# BEFORE anything imports SpotiFLAC. Patches the installed copy and the auto-update's
+# user-site copy at runtime (there is no build-time patch step; the daemon patches
+# itself the same way in downloader_daemon.main()).
 try:
     from .autofill_engine import patch_spotiflac_future_annotations as _patch_sf
     _patch_sf()
@@ -95,7 +96,7 @@ scheduler.add_job(
 # single write lock and the post-download status write aborts with "database is locked" — which
 # silently re-queues the song into an endless re-download loop. 2 concurrent + busy_timeout=60s
 # lets the writes serialize cleanly. (AIMD auto-tune disabled here on purpose.)
-_picker_max = 5
+_picker_max = 2
 _picker_interval = 8
 scheduler.add_job(
     picker_tick, "interval", seconds=_picker_interval,

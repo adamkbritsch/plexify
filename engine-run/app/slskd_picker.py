@@ -919,10 +919,23 @@ def acquire_track(
 # inside the daemon on the NAS. (engine/ holds the pristine copy.)
 # ═══════════════════════════════════════════════════════════════════════════
 
+# The near-storage implementations above are what the NAS daemon actually runs; the
+# delegating overrides below shadow their public names for the Mac engine. Capture the
+# real ones first so the daemon (PLEXIFY_DOWNLOADER_DAEMON=1) can still reach them.
+_real_acquire_album = acquire_album
+_real_acquire_track = acquire_track
+
+
 def acquire_album(artist, album, sample_song=None, single_track_ok=False,
                   expected_track_count=None,
                   download_dir="/Volumes/MediaVolume3/Downloads/music/spotiflac",
                   flac_only=True, timeout_seconds=600):
+    if os.environ.get("PLEXIFY_DOWNLOADER_DAEMON") == "1":
+        return _real_acquire_album(artist, album, sample_song=sample_song,
+                                   single_track_ok=single_track_ok,
+                                   expected_track_count=expected_track_count,
+                                   download_dir=download_dir, flac_only=flac_only,
+                                   timeout_seconds=timeout_seconds)
     from .nas_downloader import enqueue_and_wait
     r = enqueue_and_wait("soulseek", mode="album", dest_dir=download_dir,
                          artist=artist, album=album,
@@ -940,6 +953,9 @@ def acquire_album(artist, album, sample_song=None, single_track_ok=False,
 def acquire_track(artist, title,
                   download_dir="/Volumes/MediaVolume3/Downloads/music/spotiflac",
                   flac_only=True, timeout_seconds=180):
+    if os.environ.get("PLEXIFY_DOWNLOADER_DAEMON") == "1":
+        return _real_acquire_track(artist, title, download_dir=download_dir,
+                                   flac_only=flac_only, timeout_seconds=timeout_seconds)
     from .nas_downloader import enqueue_and_wait
     r = enqueue_and_wait("soulseek", mode="track", dest_dir=download_dir,
                          artist=artist, title=title,

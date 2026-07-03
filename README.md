@@ -23,7 +23,7 @@ A fully native SwiftUI front-end (dark, OLED-black) — same engine, JSON API, a
 
 | Dashboard | Library |
 |:---:|:---:|
-| [![Plexify macOS app — Dashboard](docs/screenshots/mac-dashboard.png)](docs/screenshots/mac-dashboard.png) | [![Plexify macOS app — Library](docs/screenshots/mac-library.png)](docs/screenshots/mac-library.png) |
+| <a href="docs/screenshots/mac-dashboard.png"><img src="docs/screenshots/mac-dashboard.png" width="440" alt="Plexify macOS app — Dashboard"></a> | <a href="docs/screenshots/mac-library.png"><img src="docs/screenshots/mac-library.png" width="440" alt="Plexify macOS app — Library"></a> |
 
 ### Web UI
 
@@ -31,7 +31,7 @@ Served by the engine — everything the native app does, in the browser.
 
 | Dashboard | Library |
 |:---:|:---:|
-| [![Plexify web UI — Dashboard](docs/screenshots/web-dashboard.png)](docs/screenshots/web-dashboard.png) | [![Plexify web UI — Library](docs/screenshots/web-library.png)](docs/screenshots/web-library.png) |
+| <a href="docs/screenshots/web-dashboard.png"><img src="docs/screenshots/web-dashboard.png" width="440" alt="Plexify web UI — Dashboard"></a> | <a href="docs/screenshots/web-library.png"><img src="docs/screenshots/web-library.png" width="440" alt="Plexify web UI — Library"></a> |
 
 ---
 

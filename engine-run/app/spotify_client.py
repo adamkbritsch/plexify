@@ -20,9 +20,16 @@ _FEAT_RE = re.compile(r"\s+\b(feat\.?|featuring|ft\.?)\b.*", re.IGNORECASE)
 
 
 
-# Set by search_track when a 429 cut the search short — callers must treat
-# that as "try again later", NOT as "this track does not exist on Spotify".
-LAST_SEARCH_RATELIMITED = False
+# Set by search_track when a 429 cut the search short — callers must treat that as "try
+# again later", NOT as "this track does not exist on Spotify". Thread-LOCAL, not a module
+# global: concurrent scheduler jobs each call search_track on their own thread, so a shared
+# global lets one thread's reset clobber another's 429 signal before its caller reads it.
+_search_state = threading.local()
+
+
+def was_search_ratelimited() -> bool:
+    """True if THIS thread's most recent search_track() was cut short by a 429."""
+    return getattr(_search_state, "ratelimited", False)
 
 def _sanitize(s: str) -> str:
     return _QUOTE_RE.sub("", s or "").strip()
@@ -460,8 +467,7 @@ def search_track(title: str, artist: str, isrc: Optional[str] = None) -> Optiona
         f'{title_clean} {artist_clean}',
         f'{_strip_extras(title_clean)} {_strip_extras(artist_clean)}',
     ]
-    global LAST_SEARCH_RATELIMITED
-    LAST_SEARCH_RATELIMITED = False
+    _search_state.ratelimited = False
     candidates: list[Track] = []
     seen_ids: set[str] = set()
     for q in queries:
@@ -475,9 +481,9 @@ def search_track(title: str, artist: str, isrc: Optional[str] = None) -> Optiona
             if "429" in str(e):
                 # Rate-limited: each remaining query form would burn its own full
                 # retry budget against the same 429 wall (~30s apiece). Bail out
-                # and let callers check LAST_SEARCH_RATELIMITED — a 429 is not a
+                # and let callers check was_search_ratelimited() — a 429 is not a
                 # "track missing" result.
-                LAST_SEARCH_RATELIMITED = True
+                _search_state.ratelimited = True
                 break
             continue
         items = (res.get("tracks") or {}).get("items") or []

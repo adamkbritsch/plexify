@@ -614,7 +614,7 @@ def sync_plex_ratings_to_spotify_tick(batch: int = 80) -> dict:
                     sid = getattr(tr, "id", None) if tr else None
                 except Exception:
                     sid = None
-                if getattr(spotify_client, "LAST_SEARCH_RATELIMITED", False):
+                if spotify_client.was_search_ratelimited():
                     # 429 is not a miss: don't poison the 24h cache, and stop the
                     # search phase after two strikes — each rate-limited search
                     # burns ~30s of retries, and a batch of 80 was hammering the
@@ -628,6 +628,12 @@ def sync_plex_ratings_to_spotify_tick(batch: int = 80) -> dict:
                     continue
                 _rl_streak = 0
                 if not sid:
+                    if len(_RATINGS_SEARCH_NEG) > 10000:   # prune expired (>24h), then hard-bound
+                        _cut = time.time() - 24 * 3600
+                        for _k in [k for k, v in list(_RATINGS_SEARCH_NEG.items()) if v < _cut]:
+                            _RATINGS_SEARCH_NEG.pop(_k, None)
+                        if len(_RATINGS_SEARCH_NEG) > 10000:
+                            _RATINGS_SEARCH_NEG.clear()
                     _RATINGS_SEARCH_NEG[_negkey] = time.time()
             if sid:
                 to_save.append((sid, title, artist, album))
@@ -841,9 +847,14 @@ def autostar_place_tick(batch: int = 200) -> dict:
         known = {str(k) for (k,) in s.execute(select(AutoStar.plex_track_key)).all()}
         liked_rows = list(s.scalars(select(SpotifyLikedTrack)).all())
         liked_title_by_tid = {lr.spotify_track_id: _norm_title_key(lr.title or "") for lr in liked_rows}
-        liked_by_title = {}
+        # Keyed on (artist, title). A title-only key mis-attributes an album-filler track to
+        # an unrelated liked song that shares a common title (e.g. 'Intro'/'Interlude'/'Outro'),
+        # which would later dispute the WRONG song when that filler is un-starred.
+        liked_by_artist_title = {}
         for lr in liked_rows:
-            liked_by_title.setdefault(_norm_title_key(lr.title or ""), lr.spotify_track_id)
+            liked_by_artist_title.setdefault(
+                (_norm_title_key(lr.artist or ""), _norm_title_key(lr.title or "")),
+                lr.spotify_track_id)
         path_to_row, row_tids = {}, {}
         for r in s.scalars(select(AutofillAction).where(AutofillAction.imported_paths.isnot(None))).all():
             try:
@@ -883,7 +894,8 @@ def autostar_place_tick(batch: int = 200) -> dict:
             if row_id is not None:
                 sid = next((tid for tid in row_tids.get(row_id, ()) if liked_title_by_tid.get(tid) == tk), None)
             if not sid:
-                sid = liked_by_title.get(tk)
+                t_artist = getattr(t, "originalTitle", None) or getattr(t, "grandparentTitle", "") or ""
+                sid = liked_by_artist_title.get((_norm_title_key(t_artist), tk))
             if _plex_rate(t, rating):
                 out["starred"] += 1
             else:
@@ -3795,6 +3807,13 @@ def dispute_song(track_id: str) -> dict:
                         atticed.append(p)
                     except Exception:
                         log.exception("dispute_song: attic failed for %s", p)
+        if row is None:
+            # No imported row links this liked track to a file, so we don't know which file to
+            # attic or which source to blacklist. Reporting ok here would make the detector
+            # delete the AutoStar row and silently stop watching a still-wrong track without
+            # disputing anything — return failure so the row is kept for a later retry instead.
+            out["error"] = "liked track not linked to an imported row; nothing to dispute"
+            return out
         add_dispute(track_id, src)
         try:
             open("/data/disputes.jsonl", "a").write(_json.dumps(
@@ -7514,6 +7533,8 @@ def sweep_orphan_downloads() -> dict:
         out["throttled"] = True
         return out
     _SWEEP_LAST = _now
+    if len(_SWEEP_WARNED) > 5000:   # bound the warn-once set in the long-lived worker
+        _SWEEP_WARNED.clear()
     DL_ROOTS = ["/Volumes/MediaVolume3/Downloads/music/complete", "/Volumes/MediaVolume3/Downloads/music/spotiflac"]
     MUSIC = "/Volumes/MediaVolume3/plexify-music"
     try:

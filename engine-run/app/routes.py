@@ -480,7 +480,12 @@ def create_pair():
         flash("Pick a Spotify playlist (Spotify is the only allowed source).", "error")
         return redirect(url_for("main.playlists"))
 
-    sp_list = {p.id: p for p in spotify_client.list_my_playlists()}
+    try:
+        sp_list = {p.id: p for p in spotify_client.list_my_playlists()}
+    except Exception:
+        log.exception("create_pair: list_my_playlists failed")
+        flash("Couldn't reach Spotify just now (it may be rate-limiting). Try again in a moment.", "error")
+        return redirect(url_for("main.playlists"))
     if sp_id not in sp_list:
         flash("Spotify playlist not found.", "error")
         return redirect(url_for("main.playlists"))

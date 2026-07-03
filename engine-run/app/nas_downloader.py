@@ -28,9 +28,37 @@ log = logging.getLogger(__name__)
 _HOSTS = [h for h in os.environ.get(
     "NAS_DOWNLOADER_HOSTS", "http://plexify-downloader:8788").split(";") if h.strip()]
 # Daemon's view of staging -> the org host's view of the same dir (SMB mount / bind mount).
-_NAS_STAGING_PREFIX = "/downloads_music/staging"
+# _NAS_STAGING_PREFIX MUST match the daemon's STAGING_ROOT (downloader_daemon.py) — the
+# engine only rewrites paths that start with it, so honor the same documented env knob or a
+# customized daemon staging root leaves delivered paths untranslated (files "not visible").
+_NAS_STAGING_PREFIX = os.environ.get("STAGING_ROOT", "/downloads_music/staging").rstrip("/")
 _MAC_STAGING_PREFIX = os.environ.get(
-    "STAGING_MOUNT", "/Volumes/MediaVolume3/Downloads/music/staging")
+    "STAGING_MOUNT", "/Volumes/MediaVolume3/Downloads/music/staging").rstrip("/")
+
+# The daemon runs from a SEPARATE, fresh DB, so it has none of the slskd/squid/telegram
+# config the user set in the engine's setup wizard. Forward those values with each job; the
+# daemon applies them before running the adapter. (Runtime cooldown '*_break_until' keys are
+# the daemon's own state and are intentionally NOT forwarded.)
+_FORWARDED_CONFIG_KEYS = (
+    "slskd_url", "slskd_api_key",
+    "squid_base", "autofill_squid_enabled",
+    "autofill_soulseek_hires_only", "autofill_allow_cd_quality",
+    "telegram_enabled", "telegram_api_id", "telegram_api_hash",
+    "telegram_session", "telegram_bot",
+)
+
+
+def _source_config() -> dict:
+    try:
+        from .db import get_config
+    except Exception:
+        return {}
+    out = {}
+    for k in _FORWARDED_CONFIG_KEYS:
+        v = get_config(k, "")
+        if v not in (None, ""):
+            out[k] = v
+    return out
 _POLL_SECS = 3
 _QUEUE_GRACE = 240   # extra wait on top of the source's own timeout (serial daemon queue)
 
@@ -134,7 +162,7 @@ def enqueue_and_wait(source: str, *, mode: str = "album", dest_dir: str | None =
                 "error": "legal attestation required — downloads blocked until you agree"}
     body = {"source": source, "mode": mode, "artist": artist, "album": album,
             "title": title, "sample_song": sample_song, "spotify_url": spotify_url,
-            "track_ids": track_ids, "kwargs": kwargs or {}}
+            "track_ids": track_ids, "kwargs": kwargs or {}, "config": _source_config()}
     try:
         job_id = _req("/enqueue", body)["job_id"]
     except Exception as e:

@@ -388,6 +388,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "bad json"})
         if body.get("source") not in ("soulseek", "spotiflac", "squid", "telegram"):
             return self._send(400, {"error": "source must be one of soulseek|spotiflac|squid|telegram"})
+        # Apply the engine's forwarded source config (slskd/squid/telegram creds etc.) to this
+        # daemon's OWN config DB — it starts fresh and the setup wizard only writes the engine's
+        # DB, so without this every delegated download would see an unconfigured source. Creds
+        # are applied to config, never written into the on-disk job file below.
+        cfg = body.get("config") or {}
+        if cfg:
+            try:
+                from app.db import set_config
+                for k, v in cfg.items():
+                    set_config(k, v)
+            except Exception:
+                log.exception("enqueue: applying forwarded config failed")
         job = {
             "id": time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8],
             "status": "queued", "created": time.time(),

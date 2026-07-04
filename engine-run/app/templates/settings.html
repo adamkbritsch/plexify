@@ -655,6 +655,10 @@
     <span><strong>Delete unnecessary music</strong> <small class="muted">— permanently delete junk/lossy/duplicates instead of quarantining to <code>_unnecessary/</code>. Off = recoverable.</small></span>
   </label>
   <label class="row gap toggle-row">
+    <input type="checkbox" id="mi-songs" {% if get_config('manual_import_songs_only','0')=='1' %}checked{% endif %}>
+    <span>Keep songs only <small class="muted">— delete non-song files (playlists, logs, pdfs) too; album covers are kept and filed with the songs</small></span>
+  </label>
+  <label class="row gap toggle-row">
     <input type="checkbox" id="mi-liked" {% if get_config('manual_import_require_liked','0')=='1' %}checked{% endif %}>
     <span>Only import music in my Spotify <small class="muted">— stricter; also discard FLAC that doesn't match a liked/playlist song</small></span>
   </label>
@@ -669,7 +673,8 @@
 (function(){
   const $=id=>document.getElementById(id), st=$('mi-status');
   function cfg(){return{manual_import_enabled:$('mi-enabled').checked,manual_import_path:$('mi-path').value,
-    manual_import_delete_unnecessary:$('mi-delete').checked,manual_import_require_liked:$('mi-liked').checked};}
+    manual_import_delete_unnecessary:$('mi-delete').checked,manual_import_require_liked:$('mi-liked').checked,
+    manual_import_songs_only:$('mi-songs').checked};}
   async function save(){await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg())});}
   $('mi-save').addEventListener('click',async()=>{st.textContent='saving…';await save();st.textContent='saved';});
   function fmt(dry,d){ const by=Object.entries(d.by_reason||{}).map(([k,v])=>k+' '+v).join(', ');

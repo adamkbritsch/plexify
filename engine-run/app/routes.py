@@ -3360,7 +3360,8 @@ def api_settings():
                     "autofill_picker_enabled", "autofill_strict_flac",
                     "autofill_allow_mp3_fallback", "autofill_allow_cd_quality",
                     "manual_import_enabled", "manual_import_delete_unnecessary",
-                    "manual_import_dry_run", "manual_import_require_liked"):
+                    "manual_import_dry_run", "manual_import_require_liked",
+                    "manual_import_songs_only"):
             if _bk in data:
                 set_config(_bk, "1" if data.get(_bk) else "0")
         if "autofill_acquisition_mode" in data:
@@ -3480,6 +3481,7 @@ def api_settings():
         "manual_import_delete_unnecessary": _b("manual_import_delete_unnecessary"),
         "manual_import_dry_run": _b("manual_import_dry_run"),
         "manual_import_require_liked": _b("manual_import_require_liked"),
+        "manual_import_songs_only": _b("manual_import_songs_only"),
     })
 
 

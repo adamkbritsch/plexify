@@ -21,6 +21,7 @@ from .db import get_config
 log = logging.getLogger(__name__)
 
 _AUDIO_EXTS = (".flac", ".mp3", ".m4a", ".alac", ".aac", ".ogg", ".opus", ".wav", ".wma", ".aiff")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff")   # covers
 _NONMUSIC_GENRES = {"podcast", "podcasts", "audiobook", "audiobooks", "audio book", "spoken word",
                     "spoken", "speech", "sound effect", "sound effects", "sfx", "asmr"}
 _DEFAULT_MIN_SECONDS = 15     # below this a FLAC is treated as a clip, not a song. Kept LOW on
@@ -90,7 +91,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                                    _known_artists, _intent_title_keys, _LOCAL_PATH_PREFIX)
 
     out = {"scanned": 0, "imported": 0, "upgraded": 0, "deleted": 0, "quarantined": 0,
-           "skipped_inflight": 0, "by_reason": {}, "bytes": 0, "dry_run": bool(dry_run)}
+           "covers": 0, "skipped_inflight": 0, "by_reason": {}, "bytes": 0, "dry_run": bool(dry_run)}
     root = _import_path()
     if not os.path.isdir(root):
         out["error"] = "import folder not found: %s" % root
@@ -99,6 +100,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     MUSIC = _LOCAL_PATH_PREFIX
     require_liked = _cfg_bool("manual_import_require_liked")
     delete_mode = _cfg_bool("manual_import_delete_unnecessary")
+    songs_only = _cfg_bool("manual_import_songs_only")   # keep only songs (+ covers); delete other junk
     try:
         min_sec = float(get_config("manual_import_min_seconds", str(_DEFAULT_MIN_SECONDS)) or _DEFAULT_MIN_SECONDS)
     except (TypeError, ValueError):
@@ -134,11 +136,13 @@ def manual_import_scan(dry_run: bool = False) -> dict:
 
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d != "_unnecessary"]   # never descend into our quarantine
-        for fn in fns:
-            ext = os.path.splitext(fn)[1].lower()
-            if ext not in _AUDIO_EXTS:
-                continue                                    # leave non-audio (art/cue/nfo) alone
+        audio = [f for f in fns if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
+        others = [f for f in fns if os.path.splitext(f)[1].lower() not in _AUDIO_EXTS]
+        dest_counts: dict = {}                             # album folders THIS dir's songs landed in
+
+        for fn in audio:
             path = os.path.join(dp, fn)
+            ext = os.path.splitext(fn)[1].lower()
             try:
                 if now - os.path.getmtime(path) < _INFLIGHT_SECS:
                     out["skipped_inflight"] += 1
@@ -187,7 +191,8 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                     is_upgrade = True                       # replace + attic the worse copy
                 else:
                     _dispose(path, "duplicate"); continue
-            # 7. place the keeper
+            # 7. place the keeper (this dir's covers ride into the album it lands in)
+            dest_counts[dest] = dest_counts.get(dest, 0) + 1
             if dry_run:
                 _reason("upgrade" if is_upgrade else "import")
                 out["upgraded" if is_upgrade else "imported"] += 1
@@ -221,6 +226,47 @@ def manual_import_scan(dry_run: bool = False) -> dict:
             except Exception:
                 log.exception("manual_import: place failed for %s", path)
                 _reason("place_error")
+
+        # SONGS-ONLY: keep the album cover (move it in with the songs), delete the other junk
+        # (playlists / logs / pdfs / cue / txt). Covers are NEVER deleted — an image with no
+        # matching album this run is left in place.
+        if songs_only:
+            cover_dest = max(dest_counts, key=dest_counts.get) if dest_counts else None
+            for fn in others:
+                path = os.path.join(dp, fn)
+                try:
+                    if now - os.path.getmtime(path) < _INFLIGHT_SECS:
+                        out["skipped_inflight"] += 1
+                        continue
+                except OSError:
+                    continue
+                if os.path.splitext(fn)[1].lower() in _IMAGE_EXTS:
+                    if cover_dest:
+                        out["covers"] += 1
+                        _reason("cover")
+                        if not dry_run:
+                            try:
+                                os.makedirs(cover_dest, exist_ok=True)
+                                cdst = os.path.join(cover_dest, fn)
+                                if os.path.abspath(cdst) != os.path.abspath(path):
+                                    shutil.move(path, cdst)
+                                    _log_recovery_move("import_cover", path, cdst)
+                            except OSError:
+                                log.exception("manual_import: cover move failed for %s", path)
+                    # image with no album this run → leave it (never delete a cover)
+                else:
+                    _dispose(path, "non_song")
+
+    # Songs-only: remove emptied leftover folders so the drop zone stays clean.
+    if songs_only and not dry_run:
+        for _dp, _dns, _fns in os.walk(root, topdown=False):
+            if _dp == root or "_unnecessary" in _dp.split(os.sep):
+                continue
+            try:
+                if not os.listdir(_dp):
+                    os.rmdir(_dp)
+            except OSError:
+                pass
 
     # Trigger a Plex library scan if we placed anything (same pattern the album rules use).
     if not dry_run and (out["imported"] or out["upgraded"]):

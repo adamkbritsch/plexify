@@ -337,6 +337,7 @@ struct SettingsDTO: Codable {
     var manual_import_delete_unnecessary: Bool?
     var manual_import_dry_run: Bool?
     var manual_import_require_liked: Bool?
+    var manual_import_songs_only: Bool?
 }
 
 // MARK: - Unmatched (/api/unmatched — new endpoint)

@@ -52,6 +52,7 @@ struct SettingsView: View {
     @State private var importPath = "/Volumes/MediaVolume3/Downloads/music/import"
     @State private var importDelete = false
     @State private var importRequireLiked = false
+    @State private var importSongsOnly = false
     @State private var importStatus = ""
     @State private var importScanning = false
 
@@ -269,6 +270,9 @@ struct SettingsView: View {
                 Toggle(isOn: $importDelete) {
                     label2("Delete unnecessary music", "permanently delete junk / lossy / duplicates instead of quarantining them to _unnecessary/. Off = recoverable.")
                 }.toggleStyle(.switch).tint(importDelete ? PX.danger : PX.plex)
+                Toggle(isOn: $importSongsOnly) {
+                    label2("Keep songs only", "delete non-song files (playlists, logs, pdfs) too; album covers are kept and filed with the songs")
+                }.toggleStyle(.switch).tint(PX.plex)
                 Toggle(isOn: $importRequireLiked) {
                     label2("Only import music in my Spotify", "stricter — also discard FLAC that doesn't match a liked / playlist song")
                 }.toggleStyle(.switch).tint(PX.plex)
@@ -294,6 +298,7 @@ struct SettingsView: View {
                 "manual_import_enabled": importEnabled, "manual_import_path": importPath,
                 "manual_import_delete_unnecessary": importDelete,
                 "manual_import_require_liked": importRequireLiked,
+                "manual_import_songs_only": importSongsOnly,
             ])
             // Kick off the scan in the background (big folders exceed the HTTP timeout), then poll.
             let start = await store.postAction(dry ? "/manual-import/preview" : "/manual-import/scan", timeout: 20)
@@ -437,6 +442,7 @@ struct SettingsView: View {
         importPath = s.manual_import_path ?? "/Volumes/MediaVolume3/Downloads/music/import"
         importDelete = s.manual_import_delete_unnecessary ?? false
         importRequireLiked = s.manual_import_require_liked ?? false
+        importSongsOnly = s.manual_import_songs_only ?? false
         loaded = true
     }
 
@@ -465,6 +471,7 @@ struct SettingsView: View {
             "manual_import_path": importPath,
             "manual_import_delete_unnecessary": importDelete,
             "manual_import_require_liked": importRequireLiked,
+            "manual_import_songs_only": importSongsOnly,
         ]
         // gated fields — only send when unlocked (server also enforces this)
         if unlocked {

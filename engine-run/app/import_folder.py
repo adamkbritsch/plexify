@@ -240,3 +240,53 @@ def manual_import_scan_tick() -> dict:
     if not manual_import_enabled():
         return {"skipped": "manual_import disabled"}
     return manual_import_scan(dry_run=_cfg_bool("manual_import_dry_run"))
+
+
+# ── Async runner ────────────────────────────────────────────────────────────────────────────
+# A big drop (a full discography — hundreds of FLACs, each ffmpeg-verified) takes minutes, which
+# exceeds gunicorn's request timeout. The Preview/Scan buttons kick off a background thread that
+# stashes its result in config; the UI polls scan_status() for the outcome.
+import threading
+
+_SCAN_LOCK = threading.Lock()
+
+
+def _stash(kind: str, result: dict) -> None:
+    from .db import set_config
+    set_config("manual_import_last_kind", kind)
+    set_config("manual_import_last_at", _dt.datetime.utcnow().isoformat() + "Z")
+    set_config("manual_import_last_result_json", json.dumps(result))
+
+
+def start_scan_async(dry_run: bool) -> bool:
+    """Start a scan/preview in a background thread. Returns False if one is already running."""
+    if not _SCAN_LOCK.acquire(blocking=False):
+        return False
+    from .db import set_config
+    set_config("manual_import_running", "1")   # set synchronously so a poll right after start sees it
+    kind = "preview" if dry_run else "scan"
+
+    def _runner():
+        try:
+            _stash(kind, {"ok": True, **manual_import_scan(dry_run=dry_run)})
+        except Exception as e:
+            log.exception("manual_import: async %s failed", kind)
+            _stash(kind, {"ok": False, "error": str(e)[:200]})
+        finally:
+            set_config("manual_import_running", "0")
+            _SCAN_LOCK.release()
+
+    threading.Thread(target=_runner, daemon=True, name="manual-import").start()
+    return True
+
+
+def scan_status() -> dict:
+    from .db import get_config
+    try:
+        res = json.loads(get_config("manual_import_last_result_json", "") or "null")
+    except Exception:
+        res = None
+    return {"running": (get_config("manual_import_running", "0") or "0") == "1",
+            "kind": get_config("manual_import_last_kind", "") or "",
+            "at": get_config("manual_import_last_at", "") or "",
+            "result": res}

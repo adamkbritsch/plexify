@@ -295,18 +295,32 @@ struct SettingsView: View {
                 "manual_import_delete_unnecessary": importDelete,
                 "manual_import_require_liked": importRequireLiked,
             ])
-            let d = await store.postAction(dry ? "/manual-import/preview" : "/manual-import/scan", timeout: 180)
-            if d["ok"] as? Bool == true {
-                let imp = d["imported"] as? Int ?? 0, up = d["upgraded"] as? Int ?? 0
-                let del = d["deleted"] as? Int ?? 0, q = d["quarantined"] as? Int ?? 0
-                let sc = d["scanned"] as? Int ?? 0
-                let by = (d["by_reason"] as? [String: Any])?
-                    .map { "\($0.key) \($0.value)" }.sorted().joined(separator: ", ") ?? ""
-                importStatus = dry
-                    ? "would import \(imp)\(up > 0 ? " (+\(up) upgrade)" : "") of \(sc) scanned — \(by)"
-                    : "imported \(imp), \(up) upgraded, \(del) deleted, \(q) quarantined"
-            } else {
-                importStatus = (d["error"] as? String) ?? "failed"
+            // Kick off the scan in the background (big folders exceed the HTTP timeout), then poll.
+            let start = await store.postAction(dry ? "/manual-import/preview" : "/manual-import/scan", timeout: 20)
+            if start["ok"] as? Bool != true {
+                importStatus = (start["error"] as? String) ?? "failed"; importScanning = false; return
+            }
+            if start["started"] as? Bool == false {
+                importStatus = "a scan is already running"; importScanning = false; return
+            }
+            for _ in 0..<900 {                                   // poll up to ~30 min
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let st = await store.manualImportStatus()
+                if st["running"] as? Bool == false, let d = st["result"] as? [String: Any] {
+                    if d["ok"] as? Bool == true {
+                        let imp = d["imported"] as? Int ?? 0, up = d["upgraded"] as? Int ?? 0
+                        let del = d["deleted"] as? Int ?? 0, q = d["quarantined"] as? Int ?? 0
+                        let sc = d["scanned"] as? Int ?? 0
+                        let by = (d["by_reason"] as? [String: Any])?
+                            .map { "\($0.key) \($0.value)" }.sorted().joined(separator: ", ") ?? ""
+                        importStatus = dry
+                            ? "would import \(imp)\(up > 0 ? " (+\(up) upgrade)" : "") of \(sc) scanned — \(by)"
+                            : "imported \(imp), \(up) upgraded, \(del) deleted, \(q) quarantined"
+                    } else {
+                        importStatus = (d["error"] as? String) ?? "failed"
+                    }
+                    break
+                }
             }
             importScanning = false
         }

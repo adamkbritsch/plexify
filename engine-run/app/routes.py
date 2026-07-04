@@ -3527,28 +3527,34 @@ def api_unmatched_suggestions_requeue():
 
 @bp.route("/manual-import/preview", methods=["POST"])
 def manual_import_preview():
-    """Dry-run the import folder: classify everything, move/delete NOTHING, return the tally."""
+    """Start a dry-run in the BACKGROUND (classify everything, move/delete NOTHING). A big drop
+    exceeds the HTTP timeout, so this returns immediately; poll /manual-import/status for the tally."""
     from flask import jsonify
     from . import import_folder
-    try:
-        return jsonify({"ok": True, **import_folder.manual_import_scan(dry_run=True)})
-    except Exception as e:
-        log.exception("manual import preview failed")
-        return jsonify({"ok": False, "error": str(e)[:200]})
+    started = import_folder.start_scan_async(dry_run=True)
+    return jsonify({"ok": True, "started": started,
+                    "error": None if started else "a scan is already running"})
 
 
 @bp.route("/manual-import/scan", methods=["POST"])
 def manual_import_scan_route():
-    """Run the import for real: sort keepers into the library, discard the rest."""
+    """Start the real import in the BACKGROUND: sort keepers into the library, discard the rest.
+    Returns immediately; poll /manual-import/status for the result."""
     from flask import jsonify
     from . import import_folder
     if not import_folder.manual_import_enabled():
         return jsonify({"ok": False, "error": "manual import is off — enable it first"})
-    try:
-        return jsonify({"ok": True, **import_folder.manual_import_scan(dry_run=False)})
-    except Exception as e:
-        log.exception("manual import scan failed")
-        return jsonify({"ok": False, "error": str(e)[:200]})
+    started = import_folder.start_scan_async(dry_run=False)
+    return jsonify({"ok": True, "started": started,
+                    "error": None if started else "a scan is already running"})
+
+
+@bp.route("/manual-import/status")
+def manual_import_status():
+    """Poll target for the async preview/scan — {running, kind, at, result}."""
+    from flask import jsonify
+    from . import import_folder
+    return jsonify(import_folder.scan_status())
 
 
 @bp.route("/api/unmatched")

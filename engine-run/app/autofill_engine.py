@@ -5329,10 +5329,13 @@ def _locked_album_dirs() -> frozenset:
 
 
 def _log_recovery_move(kind: str, src: str, dst: str) -> None:
-    """Append to the move ledger so bulk file recovery is reversible —
-    /data/rollback_acq_recovery.py replays this file in reverse."""
+    """Append to the move ledger so bulk file recovery is reversible. Writes to
+    <DATA_DIR>/acq_recovery_moves.jsonl — DATA_DIR, NOT a hardcoded /data, so the ledger
+    actually exists in the Mac split (where /data is not a real path); rollback_acq_recovery.py
+    replays it in reverse."""
     try:
-        with open("/data/acq_recovery_moves.jsonl", "a") as fh:
+        _led = os.path.join(os.environ.get("DATA_DIR", "/data"), "acq_recovery_moves.jsonl")
+        with open(_led, "a") as fh:
             fh.write(json.dumps({"ts": time.time(), "kind": kind, "src": src, "dst": dst}) + "\n")
     except Exception:
         pass

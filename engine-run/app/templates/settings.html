@@ -672,15 +672,23 @@
     manual_import_delete_unnecessary:$('mi-delete').checked,manual_import_require_liked:$('mi-liked').checked};}
   async function save(){await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg())});}
   $('mi-save').addEventListener('click',async()=>{st.textContent='saving…';await save();st.textContent='saved';});
+  function fmt(dry,d){ const by=Object.entries(d.by_reason||{}).map(([k,v])=>k+' '+v).join(', ');
+    return dry?('would import '+(d.imported||0)+(d.upgraded?(' (+'+d.upgraded+' upgrade)'):'')+' of '+(d.scanned||0)+' — '+by)
+      :('imported '+(d.imported||0)+', '+(d.upgraded||0)+' upgraded, '+(d.deleted||0)+' deleted, '+(d.quarantined||0)+' quarantined'); }
   async function run(dry){
     if($('mi-delete').checked && !dry && !confirm('“Delete unnecessary music” is ON — junk / lossy / duplicate files will be PERMANENTLY deleted. Continue?')) return;
     st.textContent=dry?'previewing…':'scanning…'; await save();
-    let d; try{ d=await (await fetch(dry?'/manual-import/preview':'/manual-import/scan',{method:'POST',headers:{'X-Requested-With':'fetch'}})).json(); }
+    let s; try{ s=await (await fetch(dry?'/manual-import/preview':'/manual-import/scan',{method:'POST',headers:{'X-Requested-With':'fetch'}})).json(); }
     catch(e){ st.textContent='failed'; return; }
-    if(d.ok){ const by=Object.entries(d.by_reason||{}).map(([k,v])=>k+' '+v).join(', ');
-      st.textContent=dry?('would import '+(d.imported||0)+(d.upgraded?(' (+'+d.upgraded+' upgrade)'):'')+' of '+(d.scanned||0)+' — '+by)
-        :('imported '+(d.imported||0)+', '+(d.upgraded||0)+' upgraded, '+(d.deleted||0)+' deleted, '+(d.quarantined||0)+' quarantined'); }
-    else st.textContent=d.error||'failed';
+    if(!s.ok){ st.textContent=s.error||'failed'; return; }
+    if(s.started===false){ st.textContent='a scan is already running'; return; }
+    for(let i=0;i<900;i++){                                   // poll up to ~30 min
+      await new Promise(r=>setTimeout(r,2000));
+      let stt; try{ stt=await (await fetch('/manual-import/status',{cache:'no-store'})).json(); }catch(e){ continue; }
+      if(stt.running===false && stt.result){
+        st.textContent=stt.result.ok?fmt(dry,stt.result):(stt.result.error||'failed'); break;
+      }
+    }
   }
   $('mi-preview').addEventListener('click',()=>run(true));
   $('mi-scan').addEventListener('click',()=>run(false));

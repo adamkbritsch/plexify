@@ -199,6 +199,13 @@ final class PlexifyStore: ObservableObject {
     // MARK: - settings
 
     func loadSettings() async { settings = await get("/api/settings") }
+    func manualImportStatus() async -> [String: Any] {
+        guard let url = URL(string: base + "/manual-import/status") else { return [:] }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
+        } catch { return [:] }
+    }
     func setLikedCover(_ which: String) async {
         _ = await postForm("/settings/liked-cover", "which=\(which)")
         lastAction = "Cover set to \(which)"; await loadSettings()

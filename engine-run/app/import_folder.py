@@ -10,6 +10,7 @@ orphan sweep runs against the download dirs — no NAS↔Mac path translation ne
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import logging
 import os
 import shutil

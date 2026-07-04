@@ -22,7 +22,9 @@ log = logging.getLogger(__name__)
 _AUDIO_EXTS = (".flac", ".mp3", ".m4a", ".alac", ".aac", ".ogg", ".opus", ".wav", ".wma", ".aiff")
 _NONMUSIC_GENRES = {"podcast", "podcasts", "audiobook", "audiobooks", "audio book", "spoken word",
                     "spoken", "speech", "sound effect", "sound effects", "sfx", "asmr"}
-_MIN_DURATION_S = 30          # shorter than this = a clip/interlude, not a song
+_DEFAULT_MIN_SECONDS = 15     # below this a FLAC is treated as a clip, not a song. Kept LOW on
+                              # purpose — real songs get short (the Beatles' "Her Majesty" is 23s),
+                              # so only true micro-clips are caught. Tune via manual_import_min_seconds.
 _INFLIGHT_SECS = 2 * 60       # skip files touched in the last 2 min (still copying)
 DEFAULT_IMPORT_PATH = "/Volumes/MediaVolume3/Downloads/music/import"
 
@@ -96,6 +98,10 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     MUSIC = _LOCAL_PATH_PREFIX
     require_liked = _cfg_bool("manual_import_require_liked")
     delete_mode = _cfg_bool("manual_import_delete_unnecessary")
+    try:
+        min_sec = float(get_config("manual_import_min_seconds", str(_DEFAULT_MIN_SECONDS)) or _DEFAULT_MIN_SECONDS)
+    except (TypeError, ValueError):
+        min_sec = _DEFAULT_MIN_SECONDS
     now = time.time()
     datestamp = _dt.datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -149,7 +155,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 _dispose(path, "corrupt"); continue
             # 3. non-music / tiny-clip gate (conservative — keep when unsure)
             artist, album, title, genre, dur = _read_tags(path)
-            if dur and dur < _MIN_DURATION_S:
+            if dur and min_sec > 0 and dur < min_sec:
                 _dispose(path, "tiny"); continue
             if genre and genre.strip().lower() in _NONMUSIC_GENRES:
                 _dispose(path, "non_music"); continue

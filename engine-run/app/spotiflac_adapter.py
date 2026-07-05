@@ -27,7 +27,15 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from dataclasses import dataclass, field
 from typing import Optional
 
-from SpotiFLAC import DownloadOptions, SpotiflacDownloader
+# SpotiFLAC is installed ONLY on the NAS daemon (deliberately excluded from the Mac
+# venv). A bare module-level import made `import spotiflac_adapter` — and therefore
+# EVERY picker_tick album acquisition on the Mac — crash with ModuleNotFoundError
+# before the NAS-DAEMON delegation override below could take over (found 2026-07-05:
+# every claim died post-claim, leaving zombie 'downloading' rows and in_flight=0).
+try:
+    from SpotiFLAC import DownloadOptions, SpotiflacDownloader
+except ImportError:                     # Mac split: the delegation override handles acquire()
+    DownloadOptions = SpotiflacDownloader = None
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +156,10 @@ def acquire(
     Returns:
         AcquireResult with all fields populated.
     """
+    if SpotiflacDownloader is None:     # SpotiFLAC not installed (Mac split organizer)
+        return AcquireResult(success=False, error="SpotiFLAC not installed on this host",
+                             duration_seconds=0.0)
+
     if services is None:
         services = list(_DEFAULT_SERVICES)
 

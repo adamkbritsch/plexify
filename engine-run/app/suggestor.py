@@ -85,9 +85,14 @@ def coverage_gap_suggestions(min_tracks: int = 3, limit: int = 20) -> dict:
         g = by_artist.setdefault(ak, {"artist": artist, "tracks": set(),
                                       "albums": {}, "needs_manual": 0, "samples": []})
         g["tracks"].add(tid)
+        ex = tid in exhausted
         if album:
-            g["albums"].setdefault(_norm(album), album)
-        if tid in exhausted:
+            alb = g["albums"].setdefault(_norm(album),
+                                         {"album": album, "tids": set(), "needs_manual": 0})
+            alb["tids"].add(tid)
+            if ex:
+                alb["needs_manual"] += 1
+        if ex:
             g["needs_manual"] += 1
         if len(g["samples"]) < 5 and title:
             g["samples"].append(title)
@@ -101,13 +106,23 @@ def coverage_gap_suggestions(min_tracks: int = 3, limit: int = 20) -> dict:
         c = len(g["tracks"])
         if c < min_tracks:
             continue
+        # Per-album breakdown, ranked by how much each album would raise coverage (== missing
+        # tracks, since the denominator is fixed). Powers the expandable card's album dropdown.
+        albums_ranked = sorted(
+            [{"album": a["album"],
+              "missing_count": len(a["tids"]),
+              "needs_manual_count": a["needs_manual"],
+              "coverage_gain_pct": round(100 * len(a["tids"]) / denom, 1)}
+             for a in g["albums"].values()],
+            key=lambda x: (x["missing_count"], x["needs_manual_count"]), reverse=True)
         out.append({
             "artist": g["artist"],
             "artist_key": ak,
             "missing_count": c,
             "needs_manual_count": g["needs_manual"],
             "coverage_gain_pct": round(100 * c / denom, 1),
-            "missing_albums": sorted(g["albums"].values())[:12],
+            "missing_albums": [a["album"] for a in albums_ranked][:12],   # ranked names (compat)
+            "albums": albums_ranked[:25],                                 # rich ranked breakdown
             "sample_titles": g["samples"],
         })
     # Rank by raw uncovered count (== coverage-gain order, denominator is fixed);

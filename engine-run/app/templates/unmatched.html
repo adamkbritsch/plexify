@@ -10,10 +10,24 @@
 <style>
 .sugg-row{display:flex;align-items:flex-start;gap:14px;padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:rgba(255,255,255,0.02)}
 .sugg-main{flex:1;min-width:0}
-.sugg-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sugg-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer}
+.sugg-chev{display:inline-block;color:var(--muted);font-size:10px;transition:transform .15s}
+.sugg-row.expanded .sugg-chev{transform:rotate(90deg)}
 .sugg-badge{font-size:11px;font-weight:600;padding:1px 7px;border:1px solid var(--plex,#ebaf00);color:var(--plex,#ebaf00);border-radius:4px}
 .sugg-badge.manual{border-color:#ffb000;color:#ffb000}
 .sugg-albums{color:var(--muted);font-size:11px;margin-top:4px}
+.sugg-albums-detail{display:none;margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+.sugg-row.expanded .sugg-albums-detail{display:block}
+.sugg-row.expanded .sugg-albums{display:none}
+.sugg-alb-hdr{font-size:9px;font-weight:600;letter-spacing:.6px;color:var(--muted);margin-bottom:4px}
+.sugg-alb{padding:4px 0}
+.sugg-alb-line{display:flex;align-items:center;gap:8px}
+.sugg-alb-name{color:var(--fg);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sugg-alb-tag{font-size:8px;font-weight:600;letter-spacing:.4px;color:#ffb000;border:1px solid rgba(255,176,0,.5);border-radius:3px;padding:0 4px}
+.sugg-alb-n{margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
+.sugg-alb-gain{color:var(--plex,#ebaf00);font-size:11px;font-weight:600;min-width:46px;text-align:right}
+.sugg-alb-bar{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;margin-top:3px}
+.sugg-alb-bar>div{height:3px;background:var(--plex,#ebaf00);opacity:.6;border-radius:2px}
 .sugg-actions{display:flex;flex-direction:column;gap:6px}
 </style>
 <script>
@@ -27,22 +41,39 @@
     const s=d.suggestions||[];
     if(!s.length){ list.innerHTML='<p class="muted small">No gaps to suggest right now.</p>'; return; }
     const max=Math.max(1,...s.map(x=>x.missing_count||0));
+    const albGain=function(v){ v=v||0; if(v<=0)return '—'; if(v<0.1)return '<0.1%'; return '+'+((v>=1)?Math.round(v):v)+'%'; };
     list.innerHTML=s.map(function(x){
       const gain=(x.coverage_gain_pct>=1)?Math.round(x.coverage_gain_pct):x.coverage_gain_pct;
       const manual=(x.needs_manual_count||0)>0?'<span class="sugg-badge manual">'+x.needs_manual_count+' need manual</span>':'';
-      const albums=(x.missing_albums||[]).length?'<div class="sugg-albums">'+plxEsc((x.missing_albums||[]).join(' · '))+'</div>':'';
+      const albs=x.albums||[]; const hasAlbs=albs.length>0;
+      const chev=hasAlbs?'<span class="sugg-chev">▸</span>':'';
+      const teaser=(x.missing_albums||[]).length?'<div class="sugg-albums">'+plxEsc((x.missing_albums||[]).join(' · '))+'</div>':'';
+      const maxN=Math.max(1,...albs.map(a=>a.missing_count||0));
+      const detail=hasAlbs?('<div class="sugg-albums-detail"><div class="sugg-alb-hdr">ALBUMS BY COVERAGE GAIN</div>'
+        +albs.map(function(a){
+          const n=a.missing_count||0;
+          const tag=(a.needs_manual_count||0)>0?'<span class="sugg-alb-tag">MANUAL</span>':'';
+          const aw=Math.round(100*n/maxN);
+          return '<div class="sugg-alb"><div class="sugg-alb-line"><span class="sugg-alb-name">'+plxEsc(a.album||'?')+'</span>'+tag
+            +'<span class="sugg-alb-n">'+n+' track'+(n===1?'':'s')+'</span>'
+            +'<span class="sugg-alb-gain">'+albGain(a.coverage_gain_pct)+'</span></div>'
+            +'<div class="sugg-alb-bar"><div style="width:'+aw+'%"></div></div></div>';
+        }).join('')+'</div>'):'';
+      const albCount=hasAlbs?(' · '+albs.length+' album'+(albs.length===1?'':'s')):'';
       const w=Math.round(100*(x.missing_count||0)/max);
       return '<div class="sugg-row" data-artist="'+plxEsc(x.artist_key||'')+'"><div class="sugg-main">'
-        +'<div class="sugg-head"><span style="font-weight:600">'+plxEsc(x.artist||'?')+'</span>'
+        +'<div class="sugg-head">'+chev+'<span style="font-weight:600">'+plxEsc(x.artist||'?')+'</span>'
         +'<span class="sugg-badge">+'+gain+'%</span>'+manual+'</div>'
-        +'<div class="muted small">'+(x.missing_count||0)+' missing tracks</div>'
+        +'<div class="muted small">'+(x.missing_count||0)+' missing tracks'+albCount+'</div>'
         +'<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:2px;margin-top:5px"><div style="height:5px;width:'+w+'%;background:var(--plex,#ebaf00);border-radius:2px"></div></div>'
-        +albums+'</div><div class="sugg-actions">'
+        +teaser+detail+'</div><div class="sugg-actions">'
         +'<button class="btn small" data-act="requeue">Re-try auto</button>'
         +'<button class="btn ghost small" data-act="dismiss">Dismiss</button></div></div>';
     }).join('');
   }
   list.addEventListener('click', async function(e){
+    const head=e.target.closest('.sugg-head');
+    if(head){ head.closest('.sugg-row').classList.toggle('expanded'); return; }
     const b=e.target.closest('button[data-act]'); if(!b) return;
     const artist=b.closest('.sugg-row').dataset.artist; b.disabled=true;
     try{ await fetch('/api/unmatched/suggestions/'+b.dataset.act+'?artist='+encodeURIComponent(artist),{method:'POST',headers:{'X-Requested-With':'fetch'}}); }catch(_){}

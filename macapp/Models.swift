@@ -363,6 +363,13 @@ struct UnmatchedDTO: Codable {
 
 // MARK: - Suggestor (/api/unmatched/suggestions)
 
+struct SuggestionAlbumDTO: Codable, Hashable {
+    var album: String?
+    var missing_count: Int?
+    var needs_manual_count: Int?
+    var coverage_gain_pct: Double?
+}
+
 struct UnmatchedSuggestionDTO: Codable, Identifiable, Hashable {
     var artist: String?
     var artist_key: String?
@@ -370,6 +377,7 @@ struct UnmatchedSuggestionDTO: Codable, Identifiable, Hashable {
     var needs_manual_count: Int?
     var coverage_gain_pct: Double?
     var missing_albums: [String]?
+    var albums: [SuggestionAlbumDTO]?      // per-album breakdown, ranked by coverage gain
     var sample_titles: [String]?
     var id: String { artist_key ?? artist ?? "" }
 }

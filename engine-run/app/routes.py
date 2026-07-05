@@ -3269,13 +3269,22 @@ def api_picker_pause():
 @bp.route("/api/picker/resume", methods=["POST"])
 def api_picker_resume():
     from flask import jsonify
+    import threading
+    # Best-effort resume of the scheduled job (no-op in UI-only mode where the scheduler
+    # isn't started) — but ALWAYS fire one tick immediately so "Resume picker" actually
+    # acts (organizes staging + kicks off any import-folder drops) on every deployment.
     try:
         from .main import scheduler
         scheduler.resume_job("library_autofill_picker")
-        return jsonify({"ok": True, "paused": False})
+    except Exception:
+        log.info("api_picker_resume: resume_job skipped (scheduler not running / job absent)")
+    try:
+        from .autofill_engine import picker_tick
+        threading.Thread(target=picker_tick, name="picker-resume-tick", daemon=True).start()
     except Exception as e:
-        log.exception("api_picker_resume failed")
+        log.exception("api_picker_resume: immediate tick failed")
         return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "paused": False})
 
 
 @bp.route("/api/picker/run-now", methods=["POST"])

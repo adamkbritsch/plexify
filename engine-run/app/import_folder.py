@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 
 from .db import get_config
@@ -171,7 +172,7 @@ def _resolve_unmatched_for_imports(pairs) -> int:
             if ak and tk:
                 wanted.add((ak, tk))
         if not wanted:
-            return 0
+            return 0, set()
         deleted = 0
         track_ids: set = set()
         with _ss() as s:                                    # session_scope auto-commits on exit
@@ -189,10 +190,126 @@ def _resolve_unmatched_for_imports(pairs) -> int:
                           .where(TrackMapping.spotify_track_id.in_(track_ids),
                                  TrackMapping.plex_track_key.is_(None))
                           .values(plex_searched_at=None))
-        return deleted
+        return deleted, track_ids
     except Exception:
         log.exception("manual_import: unmatched resolve failed")
-        return 0
+        return 0, set()
+
+
+# ── Plex coverage after import ─────────────────────────────────────────────────────────────────
+# A placed file isn't "covered" until Plex has INDEXED it and a TrackMapping.plex_track_key is
+# written — the single signal that Plex coverage %, the suggestor, and playlist in-Plex flags all
+# read. Import can't set that itself (no ratingKey on disk), so after the scan we re-search Plex
+# for exactly the wanted-tracks the import satisfied and write the positive mapping the moment
+# it's found. Because Plex indexing lags the sec.update() scan (seconds→minutes), one worker
+# thread drains a shared seed set across spaced passes, so the number climbs to TRUTH as Plex
+# catches up — never claiming coverage before Plex can actually serve the file. Triggered by the
+# import (not a scheduler tick), so it works with PLEXIFY_START_SCHEDULER=0.
+_REMATCH_LOCK = threading.Lock()
+_REMATCH_PENDING: set = set()
+_REMATCH_ACTIVE = [False]
+_REMATCH_PASSES = (0, 45, 120, 240)   # seconds; absorbs Plex's index lag
+
+
+def _schedule_import_rematch(seed_ids) -> None:
+    """Queue the import's satisfied spotify_track_ids for Plex re-matching in the background.
+    Reuses a single worker: a second import while one runs just adds its seeds to the pending
+    set. Never blocks the caller."""
+    ids = {t for t in (seed_ids or ()) if t}
+    if not ids:
+        return
+    with _REMATCH_LOCK:
+        _REMATCH_PENDING.update(ids)
+        if _REMATCH_ACTIVE[0]:
+            return                                          # a worker is running — it'll pick these up
+        _REMATCH_ACTIVE[0] = True
+    threading.Thread(target=_rematch_worker, daemon=True, name="import-rematch").start()
+
+
+def _rematch_worker() -> None:
+    """Drain _REMATCH_PENDING across timed passes: gather each seed's title/artist from
+    LocalTrack→SpotifyLikedTrack, search Plex for a lossless copy (holding NO DB session across the
+    network call), and save_mapping() on a hit. Self-draining — covered ids drop out each pass;
+    misses are retried on the next pass (no negative-cache stub, so coverage never dips). Never
+    raises."""
+    try:
+        from .db import SessionLocal, TrackMapping, LocalTrack, SpotifyLikedTrack
+        from .matcher import save_mapping
+        from . import plex_client
+        from sqlalchemy import select as _sel
+    except Exception:
+        log.exception("import-rematch: import failed")
+        with _REMATCH_LOCK:
+            _REMATCH_ACTIVE[0] = False
+        return
+    try:
+        for delay in _REMATCH_PASSES:
+            if delay:
+                time.sleep(delay)
+            with _REMATCH_LOCK:
+                seeds = list(_REMATCH_PENDING)
+            if not seeds:
+                continue
+            meta: dict = {}
+            with SessionLocal() as s:
+                covered = set()
+                for i in range(0, len(seeds), 500):
+                    chunk = seeds[i:i + 500]
+                    for tm in s.scalars(_sel(TrackMapping).where(
+                            TrackMapping.spotify_track_id.in_(chunk),
+                            TrackMapping.plex_track_key.isnot(None))).all():
+                        covered.add(tm.spotify_track_id)
+                if covered:
+                    with _REMATCH_LOCK:
+                        _REMATCH_PENDING.difference_update(covered)
+                still = [t for t in seeds if t not in covered]
+                if not still:
+                    continue
+                for i in range(0, len(still), 500):
+                    chunk = still[i:i + 500]
+                    for lt in s.scalars(_sel(LocalTrack).where(
+                            LocalTrack.spotify_track_id.in_(chunk))).all():
+                        if lt.spotify_track_id not in meta and (lt.title or lt.artist):
+                            meta[lt.spotify_track_id] = (lt.title or "", lt.artist or "",
+                                                         getattr(lt, "duration_ms", None))
+                need = [t for t in still if t not in meta]
+                for i in range(0, len(need), 500):
+                    chunk = need[i:i + 500]
+                    for k in s.scalars(_sel(SpotifyLikedTrack).where(
+                            SpotifyLikedTrack.spotify_track_id.in_(chunk))).all():
+                        if k.spotify_track_id not in meta:
+                            meta[k.spotify_track_id] = (getattr(k, "title", "") or "",
+                                                        getattr(k, "artist", "") or "",
+                                                        getattr(k, "duration_ms", None))
+            hits = set()
+            for tid in still:
+                info = meta.get(tid)
+                if not info or not (info[0] or info[1]):
+                    continue
+                title, artist, dur = info
+                try:
+                    found = plex_client.search_track(title, artist, dur)
+                except Exception:
+                    found = None
+                if found and getattr(found, "key", None):
+                    try:
+                        save_mapping(spotify_id=tid, plex_key=found.key,
+                                     title=getattr(found, "title", "") or title,
+                                     artist=getattr(found, "artist", "") or artist,
+                                     method="plex/import", confidence=90)
+                        hits.add(tid)
+                    except Exception:
+                        log.exception("import-rematch: save_mapping failed for %s", tid)
+            if hits:
+                with _REMATCH_LOCK:
+                    _REMATCH_PENDING.difference_update(hits)
+                log.info("import-rematch: matched %d/%d tracks to Plex (pass +%ss)", len(hits), len(still), delay)
+    except Exception:
+        log.exception("import-rematch: worker failed")
+    finally:
+        with _REMATCH_LOCK:
+            _REMATCH_PENDING.clear()
+            _REMATCH_ACTIVE[0] = False
 
 
 def manual_import_scan(dry_run: bool = False) -> dict:
@@ -431,8 +548,9 @@ def manual_import_scan(dry_run: bool = False) -> dict:
 
     # Override the Unmatched section: every song we just placed is now present, so drop its
     # matching UnmatchedTrack row(s) (suffix-robust, artist-scoped) and reset the negative cache.
+    _rematch_seeds: set = set()
     if not dry_run and placed_titles:
-        out["unmatched_resolved"] = _resolve_unmatched_for_imports(placed_titles)
+        out["unmatched_resolved"], _rematch_seeds = _resolve_unmatched_for_imports(placed_titles)
 
     # Trigger a Plex library scan if we placed anything (same pattern the album rules use).
     if not dry_run and (out["imported"] or out["upgraded"]):
@@ -444,6 +562,13 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 sec.update()
         except Exception:
             pass
+
+    # Now that Plex has been told to scan, promote the satisfied wanted-tracks to 'covered' in the
+    # background (writes plex_track_key) so Plex coverage %, the suggestor, and playlist in-Plex
+    # flags climb to truth as Plex finishes indexing. Non-blocking → the scan returns immediately.
+    if not dry_run and _rematch_seeds:
+        _schedule_import_rematch(_rematch_seeds)
+
     log.info("manual_import_scan(dry_run=%s): %s", dry_run, out)
     return out
 

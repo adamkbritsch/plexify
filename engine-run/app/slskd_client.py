@@ -240,6 +240,40 @@ def get_transfers_for_user(username: str) -> list[dict]:
         return []
 
 
+def cancel_downloads_for_user(username: str) -> int:
+    """Best-effort: cancel every non-finished download queued from `username`
+    (DELETE /api/v0/transfers/downloads/{username}/{id}). Used when the picker
+    abandons a candidate peer so its queued transfers don't deliver hours later
+    into the downloads dir unattended. Returns the number of cancels issued."""
+    if not username:
+        return 0
+    cancelled = 0
+    try:
+        for t in get_transfers_for_user(username):
+            state = t.get("state", "") or ""
+            if any(k in state for k in ("Completed", "Succeeded", "Failed",
+                                        "Cancelled", "Rejected", "Errored")):
+                continue                       # already resolved — nothing to cancel
+            tid = t.get("id")
+            if not tid:
+                continue
+            try:
+                r = requests.delete(
+                    f"{_url()}/api/v0/transfers/downloads/{username}/{tid}",
+                    headers=_headers(),
+                    timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
+                )
+                if r.status_code in (200, 204, 404):
+                    cancelled += 1
+            except Exception:
+                continue
+    except Exception as e:
+        log.warning("slskd_client: cancel_downloads_for_user raised: %s", e)
+    if cancelled:
+        log.info("slskd_client: cancelled %d queued transfers from %s", cancelled, username)
+    return cancelled
+
+
 def check_health() -> dict:
     """Returns {connected, logged_in, username, error}."""
     try:

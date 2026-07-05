@@ -4550,7 +4550,7 @@ def picker_tick() -> dict:
                     single_track_ok=(mode == "song"),
                     flac_only=True,
                     download_dir="/Volumes/MediaVolume3/Downloads/music/spotiflac",
-                    timeout_seconds=120,  # was 300
+                    timeout_seconds=240,  # was 120 — multi-candidate failover needs headroom
                 )
                 if sl_res.get("success") and sl_res.get("paths"):
                     _journey_log[-1] = "soulseek:OK files=%d peer=%s" % (len(sl_res["paths"]), sl_res.get("peer") or "?")
@@ -8231,7 +8231,8 @@ def _telegram_fill_album_tracks(*, cid, artist, album, fa, track_ids,
         try:
             from . import slskd_picker as _slp
             if _slp.configured() and not src:
-                _sr = _slp.acquire_track(artist=artist, title=title, flac_only=True, timeout_seconds=90)
+                _sr = _slp.acquire_track(artist=artist, title=title, flac_only=True,
+                                         timeout_seconds=180)  # was 90 — room for peer failover
                 if _sr and _sr.get("success") and _sr.get("paths"):
                     src = _sr["paths"][0]
                     src_kind = "soulseek"

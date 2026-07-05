@@ -112,6 +112,13 @@ def _verify_hires_paths(paths: list) -> tuple[list, list]:
 # slskd uses backslash as path separator in filenames (Windows paths)
 _SEP_RE = re.compile(r"[/\\]")
 
+# junk-version markers, WORD-BOUNDED (see _score_track_file): 'live' must not match
+# Alive/Oliver, 'cover' must not match Undercover/Recovered, etc.
+_JUNK_RE = re.compile(
+    r"\b(instrumental|karaoke|live|remix|cover|8d|sped[\s_-]?up|slowed|nightcore)\b",
+    re.IGNORECASE,
+)
+
 # tokens to strip when normalising album/artist names for matching
 _NOISE = re.compile(
     r"\b(feat\.?|ft\.?|featuring|deluxe|edition|remastered?|remaster|"
@@ -158,27 +165,46 @@ def _extension(filename: str) -> str:
 
 def _search_queries(artist: str, album: str,
                     sample_song: Optional[str] = None) -> list:
-    """Generate 3-5 search variations, most specific first."""
+    """Generate search variations, HIGHEST-RECALL first.
+
+    Soulseek only returns a file when every query term appears in its path, so long raw
+    titles ('HIStory - PAST, PRESENT AND FUTURE - BOOK I') match nothing while the
+    cleaned/keyword forms match everything (audit 2026-07-05, S9/S9b: the raw-first
+    ordering + serial time budget meant the variants that WOULD hit often never ran).
+    Order: cleaned artist+album → keyword form → raw (still useful for exact-named
+    dirs when short) → sample-song rescue."""
     queries: list = []
     seen: set = set()
 
     def _add(q: str) -> None:
-        q = q.strip()
-        if q and q not in seen:
-            seen.add(q)
+        q = " ".join((q or "").split())
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
             queries.append(q)
-
-    _add(f"{artist} {album}")
-    _add(f"{artist} - {album}")
 
     ca = _clean(artist)
     cb = _clean(album)
-    if ca and cb:
-        _add(f"{ca} {cb}")
-        _add(f"{ca} - {cb}")
+    kw_album = _keywords(album, maxn=4)
 
+    if ca and cb and len(cb.split()) <= 6:
+        _add(f"{ca} {cb}")                      # cleaned — what peers' folders look like
+    if kw_album:
+        _add(f"{ca or artist} {kw_album}")      # distinctive words only (high recall)
+    if len(f"{artist} {album}") < 50:
+        _add(f"{artist} {album}")               # raw exact (short titles only — every raw
+        _add(f"{artist} - {album}")             # term must appear in the peer's path;
+                                                # raw also catches accent-named shares
+                                                # that the cleaned form misses)
+    kw1 = _keywords(album, maxn=1)
+    if kw1:
+        _add(f"{ca or artist} {kw1}")           # single-keyword backstop: hits shares
+                                                # named just 'Artist\HIStory\...' where
+                                                # the full subtitle never appears
     if sample_song:
         _add(f"{artist} {sample_song}")
+        sk = _keywords(sample_song, maxn=3)
+        if sk:
+            _add(f"{ca or artist} {sk}")
 
     return queries
 
@@ -286,10 +312,12 @@ def _score_track_file(f: dict, artist: str, title: str,
         score += min(120.0, math.log1p(upload_speed) * 12.0)
     if has_free_slot:
         score += 20.0
-    low = base.lower()
-    want = (title or "").lower()
-    for w in ("instrumental", "karaoke", "live", "remix", "cover", "8d", "sped up", "slowed", "nightcore"):
-        if w in low and w not in want:
+    # Junk-version penalty with WORD BOUNDARIES — raw substring matching wrongly hit
+    # 'live' in Alive/Oliver/Delivered, 'cover' in Undercover Martyn/Recovered, '8d' in
+    # peer hash suffixes, killing perfectly good files (audit 2026-07-05, S4a).
+    _want_junk = {m.lower() for m in _JUNK_RE.findall(title or "")}
+    for m in _JUNK_RE.findall(base):
+        if m.lower() not in _want_junk:
             score -= 40.0
     return max(0.0, score)
 
@@ -313,9 +341,17 @@ def _score_directory(
     audio_files = [f for f in files
                    if _extension(f.get("filename", "")) in ext_ok
                    and not f.get("isLocked", False)]
-    # Hi-res pre-filter — keep only files that MIGHT be 24-bit ≥96 kHz
+    # Hi-res pre-filter — PREFER files that look 24-bit ≥96 kHz, but don't erase the
+    # whole directory when none carry hints: plenty of genuine hi-res rips have plain
+    # names, and the post-download mutagen verify is the real enforcement (audit
+    # 2026-07-05, S7 — the hard filter silently discarded viable dirs).
+    hires_bonus = 0.0
     if _is_hires_enabled():
-        audio_files = [f for f in audio_files if _passes_hires_prefilter(f, dir_path)]
+        hinted = [f for f in audio_files if _passes_hires_prefilter(f, dir_path)]
+        if hinted:
+            audio_files = hinted
+            hires_bonus = 40.0
+        # else: keep the unhinted dir as a lower-confidence candidate
 
     if not audio_files:
         return 0.0
@@ -329,7 +365,7 @@ def _score_directory(
     if not expected_track_count and len(audio_files) > 60:
         return 0.0
 
-    score = float(len(audio_files)) * 10.0
+    score = float(len(audio_files)) * 10.0 + hires_bonus
 
     if expected_track_count:
         diff = abs(len(audio_files) - expected_track_count)
@@ -382,24 +418,33 @@ def _extract_candidates(
 ) -> list:
     """
     For each peer response, group files by parent directory and score each dir.
-    Returns sorted list of {peer, dir_path, files, score, upload_speed} dicts.
-    Skips peers with no free upload slots.
-    """
-    candidates: list = []
+    Returns sorted list of {peer, dir_path, files, score, upload_speed, has_free_slot}.
 
+    Audit 2026-07-05: (a) responses are MERGED per peer across queries first — the old
+    'last response per peer wins' dedup dropped files a peer only surfaced for an earlier
+    query (S5); (b) peers with no free upload slot are RANKED DOWN, not skipped — slskd
+    queues remotely just fine, and hard-skipping made popular albums (all peers busy)
+    structurally unacquirable (S3; the track path already had this fallback).
+    """
+    # merge responses per peer: union of files (by filename), best speed/slot flags
+    merged: dict = {}
     for resp in responses:
         peer = resp.get("username", "")
         if not peer:
             continue
-        upload_speed = resp.get("uploadSpeed") or 0
-        has_free_slot = bool(resp.get("hasFreeUploadSlot"))
+        m = merged.setdefault(peer, {"speed": 0, "slot": False, "queue": 0, "files": {}})
+        m["speed"] = max(m["speed"], resp.get("uploadSpeed") or 0)
+        m["slot"] = m["slot"] or bool(resp.get("hasFreeUploadSlot"))
+        m["queue"] = max(m["queue"], resp.get("queueLength") or 0)
+        for f in (resp.get("files") or []):
+            fn = f.get("filename", "")
+            if fn:
+                m["files"].setdefault(fn, f)
 
-        if not has_free_slot:
-            continue
-
-        files = resp.get("files") or []
+    candidates: list = []
+    for peer, m in merged.items():
         dirs: dict = {}
-        for f in files:
+        for f in m["files"].values():
             parent = _parent_path(f.get("filename", ""))
             dirs.setdefault(parent, []).append(f)
 
@@ -407,15 +452,21 @@ def _extract_candidates(
             sc = _score_directory(
                 dir_path, dir_files, artist, album,
                 expected_track_count, flac_only,
-                upload_speed, has_free_slot,
+                m["speed"], m["slot"],
             )
             if sc > 0:
+                if not m["slot"]:
+                    # busy peer: usable, but prefer free slots; shorter remote queue wins
+                    sc -= 60.0 + min(60.0, float(m["queue"]))
+                if sc <= 0:
+                    continue
                 candidates.append({
                     "peer": peer,
                     "dir_path": dir_path,
                     "files": dir_files,
                     "score": sc,
-                    "upload_speed": upload_speed,
+                    "upload_speed": m["speed"],
+                    "has_free_slot": m["slot"],
                 })
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -547,22 +598,29 @@ def _enqueue_and_wait(
             if basename:
                 state_map[basename] = t.get("state", "")
 
-        done_count = 0
+        # Audit 2026-07-05 (S6b): 'Completed, Rejected' contains BOTH 'Completed' and
+        # 'Rejected' — the old check counted a rejected 0-byte transfer as generically
+        # 'done' with no distinction. Track failures separately: the moment every
+        # transfer has RESOLVED (succeeded or failed) we exit — a failed peer now costs
+        # seconds, not a 100s stall window, which is what makes candidate failover cheap.
+        ok_count = 0
+        fail_count = 0
         pending_count = 0
         active_count = 0  # in-progress or queued (not stalled)
         for fname in enqueued_names:
             parts = _path_parts(fname)
             basename = parts[-1] if parts else ""
             state = state_map.get(basename, "")
-            if any(k in state for k in ("Succeeded", "Completed")):
-                done_count += 1
-            elif any(k in state for k in ("Failed", "Cancelled", "Rejected")):
-                done_count += 1
+            if any(k in state for k in ("Failed", "Cancelled", "Rejected", "Errored", "TimedOut")):
+                fail_count += 1
+            elif any(k in state for k in ("Succeeded", "Completed")):
+                ok_count += 1
             elif any(k in state for k in ("InProgress", "Queued")):
                 pending_count += 1
                 active_count += 1
             else:
                 pending_count += 1  # unknown state — still pending
+        done_count = ok_count + fail_count
 
         # Reset stall counter if we see progress (more done OR still active transfers)
         if done_count > last_completed or active_count > 0:
@@ -571,14 +629,15 @@ def _enqueue_and_wait(
         else:
             stall_count += 1
 
-        log.debug("slskd_picker: %d/%d done, %d pending (stall=%d)",
-                  done_count, len(enqueued_names), pending_count, stall_count)
+        log.debug("slskd_picker: %d ok + %d failed / %d, %d pending (stall=%d)",
+                  ok_count, fail_count, len(enqueued_names), pending_count, stall_count)
 
         if pending_count == 0:
-            log.info("slskd_picker: all %d transfers done", done_count)
+            log.info("slskd_picker: all %d transfers resolved (%d ok, %d failed)",
+                     done_count, ok_count, fail_count)
             break
 
-        if stall_count >= 20:
+        if stall_count >= 12:
             log.warning("slskd_picker: stalled (%d polls with no progress) waiting for %s — bailing",
                         stall_count, peer)
             break
@@ -653,16 +712,23 @@ def _find_delivered_files(
 
     found: list = []
     seen: set = set()
-    for root in search_roots:
-        if not os.path.isdir(root):
-            continue
-        for dirpath, _dirs, files in os.walk(root):
-            for fn in files:
-                if fn.lower() in wanted_basenames and _extension(fn) in ext_ok:
-                    abs_path = os.path.join(dirpath, fn)
-                    if abs_path not in seen:
-                        seen.add(abs_path)
-                        found.append(abs_path)
+    # slskd flips a transfer to 'Completed, Succeeded' a beat BEFORE the
+    # incomplete/ -> complete/ relocation lands on disk, so a walk right at
+    # completion can miss the file (observed live 2026-07-01). Retry briefly.
+    for _attempt in range(4):
+        for root in search_roots:
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    if fn.lower() in wanted_basenames and _extension(fn) in ext_ok:
+                        abs_path = os.path.join(dirpath, fn)
+                        if abs_path not in seen:
+                            seen.add(abs_path)
+                            found.append(abs_path)
+        if found:
+            break
+        time.sleep(2.0)
     return found
 
 
@@ -725,38 +791,44 @@ def acquire_album(
         log.info("slskd_picker: acquire_album artist=%r album=%r flac_only=%s timeout=%ds",
                  artist, album, flac_only, timeout_seconds)
 
+        # ── SEARCH PHASE (audit 2026-07-05, S1): short per-query waits + early stop.
+        # get_search_results early-exits on isComplete, so a 30s cap is a ceiling, not a
+        # sleep — EVERY query variant now actually runs (the old min(100s,…) waits let
+        # query #1 eat the whole budget so the high-recall variants never executed).
+        # Stop early once a strong candidate pool exists.
         queries = _search_queries(artist, album, sample_song)
         all_responses: list = []
+        candidates: list = []
+        search_budget = timeout_seconds * 0.5
 
         for q in queries:
-            if _elapsed() > timeout_seconds * 0.4:
-                log.info("slskd_picker: 40%% of timeout elapsed, stopping search phase")
+            remaining_budget = search_budget - _elapsed()
+            if remaining_budget <= 4:
+                log.info("slskd_picker: search budget elapsed, stopping search phase")
                 break
             log.info("slskd_picker: searching %r", q)
             sid = slskd_client.search(q)
             if not sid:
                 continue
-            wait = min(100.0, (timeout_seconds * 0.4) - _elapsed())  # was 20s — too short, slskd needs ~90s
-            if wait <= 2:
-                break
-            responses = slskd_client.get_search_results(sid, wait_seconds=wait)
+            responses = slskd_client.get_search_results(
+                sid, wait_seconds=min(30.0, remaining_budget))
             log.info("slskd_picker: query %r got %d peer responses", q, len(responses))
             all_responses.extend(responses)
+            # Re-rank after each query; stop searching once we have a clearly good dir
+            # (strong score + plausible track count) — recall with no wasted wall-clock.
+            candidates = _extract_candidates(
+                all_responses, artist, album, expected_track_count, flac_only)
+            if candidates:
+                top = candidates[0]
+                enough = (len(top["files"]) >= (expected_track_count or 3) - 2
+                          if expected_track_count else len(top["files"]) >= 3)
+                if top["score"] >= 250.0 and top.get("has_free_slot") and enough:
+                    log.info("slskd_picker: strong candidate found early (score %.1f) — "
+                             "stopping search phase", top["score"])
+                    break
 
         if not all_responses:
             return _ret(False, error="no responses from any search query")
-
-        # Deduplicate by username, keep last seen (later queries may refine)
-        deduped: dict = {}
-        for resp in all_responses:
-            peer_name = resp.get("username", "")
-            if peer_name:
-                deduped[peer_name] = resp
-        all_responses = list(deduped.values())
-
-        candidates = _extract_candidates(
-            all_responses, artist, album, expected_track_count, flac_only
-        )
 
         if not candidates and flac_only:
             log.info("slskd_picker: no FLAC candidates, trying any audio format")
@@ -767,45 +839,75 @@ def acquire_album(
         if not candidates:
             return _ret(False, error="no viable candidates found in search results")
 
-        best = candidates[0]
-        best_peer = best["peer"]
-        best_dir = best["dir_path"]
-        best_files = best["files"]
-        best_speed = best["upload_speed"]
+        # ── DOWNLOAD PHASE (audit 2026-07-05, S2): FAILOVER across top candidates.
+        # One flaky peer ('Completed, Rejected', 0 bytes — a known live failure) used to
+        # kill the whole acquisition even when other peers had the album. Try up to 3
+        # candidate dirs on DISTINCT peers, best first.
+        tried_peers: set = set()
+        last_error = None
+        attempted_total = 0
+        for cand in candidates:
+            if len(tried_peers) >= 3:
+                break
+            if cand["peer"] in tried_peers:
+                continue
+            if _elapsed() > timeout_seconds - 30:
+                last_error = last_error or "timeout before all candidates tried"
+                break
+            tried_peers.add(cand["peer"])
+            best_peer = cand["peer"]
+            best_dir = cand["dir_path"]
+            best_files = cand["files"]
+            best_speed = cand["upload_speed"]
 
-        log.info("slskd_picker: best candidate peer=%s dir=%r files=%d score=%.1f",
-                 best_peer,
-                 best_dir[-60:] if best_dir else "",
-                 len(best_files),
-                 best["score"])
+            log.info("slskd_picker: candidate #%d peer=%s dir=%r files=%d score=%.1f",
+                     len(tried_peers), best_peer,
+                     best_dir[-60:] if best_dir else "",
+                     len(best_files), cand["score"])
 
-        # Browse augmentation if we have fewer files than expected
-        if (expected_track_count
-                and len(best_files) < expected_track_count - 2
-                and _elapsed() < timeout_seconds * 0.5):
-            best_dir, best_files = _browse_augment(
-                best_peer, best_dir, best_files,
-                artist, album, expected_track_count, flac_only, best_speed,
+            # Browse augmentation if we have fewer files than expected
+            if (expected_track_count
+                    and len(best_files) < expected_track_count - 2
+                    and _elapsed() < timeout_seconds * 0.6):
+                best_dir, best_files = _browse_augment(
+                    best_peer, best_dir, best_files,
+                    artist, album, expected_track_count, flac_only, best_speed,
+                )
+
+            dl_result = _enqueue_and_wait(
+                peer=best_peer,
+                files=best_files,
+                download_dir=download_dir,
+                flac_only=flac_only,
+                single_track_ok=single_track_ok,
+                timeout_seconds=timeout_seconds,
+                start_time=start,
             )
+            attempted_total += dl_result.get("files_attempted", 0)
 
-        dl_result = _enqueue_and_wait(
-            peer=best_peer,
-            files=best_files,
-            download_dir=download_dir,
-            flac_only=flac_only,
-            single_track_ok=single_track_ok,
-            timeout_seconds=timeout_seconds,
-            start_time=start,
-        )
+            if dl_result["success"]:
+                return _ret(
+                    success=True,
+                    paths=dl_result.get("paths") or [],
+                    peer=best_peer,
+                    error=None,
+                    files_attempted=dl_result.get("files_attempted", 0),
+                    files_completed=dl_result.get("files_completed", 0),
+                )
 
-        return _ret(
-            success=dl_result["success"],
-            paths=dl_result.get("paths") or [],
-            peer=best_peer,
-            error=dl_result.get("error"),
-            files_attempted=dl_result.get("files_attempted", 0),
-            files_completed=dl_result.get("files_completed", 0),
-        )
+            last_error = dl_result.get("error") or "download failed"
+            log.info("slskd_picker: candidate peer=%s failed (%s) — trying next",
+                     best_peer, last_error)
+            # Best-effort: clear our queued transfers on the failed peer so they don't
+            # deliver hours later into the downloads dir unattended.
+            try:
+                slskd_client.cancel_downloads_for_user(best_peer)
+            except Exception:
+                pass
+
+        return _ret(False, peer=None,
+                    error=f"all {len(tried_peers)} candidate peers failed: {last_error}",
+                    files_attempted=attempted_total)
 
     except Exception as e:
         log.exception("slskd_picker: acquire_album raised unexpectedly")
@@ -845,67 +947,109 @@ def acquire_track(
             return _ret(False, error="slskd not logged in to Soulseek")
 
         log.info("slskd_picker: acquire_track artist=%r title=%r flac_only=%s", artist, title, flac_only)
+        # SEARCH (audit 2026-07-05, S1): short waits — get_search_results early-exits on
+        # isComplete, so every loosened variant actually runs. Stop once a strong file
+        # match exists instead of burning the whole budget.
         responses: list = []
+        search_budget = timeout_seconds * 0.6
         for q in _song_queries(artist, title):
-            if _elapsed() > timeout_seconds * 0.5:
+            remaining_budget = search_budget - _elapsed()
+            if remaining_budget <= 4:
                 break
             log.info("slskd_picker: track-search %r", q)
             sid = slskd_client.search(q)
             if not sid:
                 continue
-            wait = min(60.0, (timeout_seconds * 0.5) - _elapsed())
-            if wait <= 2:
+            responses.extend(slskd_client.get_search_results(
+                sid, wait_seconds=min(25.0, remaining_budget)))
+            # quick strength probe: a ≥200-score free-slot FLAC is plenty — stop searching
+            _probe = None
+            for r in responses:
+                _slot = bool(r.get("hasFreeUploadSlot"))
+                if not _slot:
+                    continue
+                _speed = r.get("uploadSpeed") or 0
+                for f in (r.get("files") or []):
+                    _sc = _score_track_file(f, artist, title, _speed, _slot, True)
+                    if _probe is None or _sc > _probe:
+                        _probe = _sc
+            if _probe and _probe >= 200.0:
+                log.info("slskd_picker: strong track match found early (%.1f) — stopping search", _probe)
                 break
-            responses.extend(slskd_client.get_search_results(sid, wait_seconds=wait))
         if not responses:
             return _ret(False, error="no responses from track search")
 
-        deduped: dict = {}
+        # Merge per peer across queries (S5) — union the file lists.
+        merged: dict = {}
         for r in responses:
             u = r.get("username", "")
-            if u:
-                deduped[u] = r
+            if not u:
+                continue
+            m = merged.setdefault(u, {"speed": 0, "slot": False, "queue": 0, "files": {}})
+            m["speed"] = max(m["speed"], r.get("uploadSpeed") or 0)
+            m["slot"] = m["slot"] or bool(r.get("hasFreeUploadSlot"))
+            m["queue"] = max(m["queue"], r.get("queueLength") or 0)
+            for f in (r.get("files") or []):
+                fn = f.get("filename", "")
+                if fn:
+                    m["files"].setdefault(fn, f)
 
-        def _best(strict_flac: bool, require_slot: bool = True):
-            best = None  # (score, peer, file)
-            for r in deduped.values():
-                peer = r.get("username", "")
-                if not peer:
+        def _ranked(strict_flac: bool, require_slot: bool = True):
+            out = []  # (score, peer, file)
+            for peer, m in merged.items():
+                if require_slot and not m["slot"]:
                     continue
-                has_slot = bool(r.get("hasFreeUploadSlot"))
-                if require_slot and not has_slot:
-                    continue
-                speed = r.get("uploadSpeed") or 0
-                qlen = r.get("queueLength") or 0
-                for f in (r.get("files") or []):
-                    sc = _score_track_file(f, artist, title, speed, has_slot, strict_flac)
-                    if not require_slot:
+                for f in m["files"].values():
+                    sc = _score_track_file(f, artist, title, m["speed"], m["slot"], strict_flac)
+                    if not require_slot and not m["slot"]:
                         # busy peer: slskd queues remotely just fine — prefer the
                         # shortest remote queue among otherwise-equal matches.
-                        sc -= min(50.0, float(qlen))
-                    if sc > 0 and (best is None or sc > best[0]):
-                        best = (sc, peer, f)
-            return best
+                        sc -= min(50.0, float(m["queue"]))
+                    if sc > 0:
+                        out.append((sc, peer, f))
+            out.sort(key=lambda t: t[0], reverse=True)
+            return out
 
         # Free-slot peers first; if EVERY peer holding the track is busy (common
         # for popular tracks), fall back to queueing on a busy peer instead of
         # failing with "no confident file match".
-        best = _best(flac_only) or _best(flac_only, require_slot=False)
-        if best is None and flac_only:
-            best = _best(False) or _best(False, require_slot=False)
-        if best is None:
+        ranked = _ranked(flac_only) or _ranked(flac_only, require_slot=False)
+        if not ranked and flac_only:
+            ranked = _ranked(False) or _ranked(False, require_slot=False)
+        if not ranked:
             return _ret(False, error="no confident file match in results")
-        sc, peer, f = best
-        log.info("slskd_picker: track best score=%.1f peer=%s file=%r",
-                 sc, peer, (f.get("filename", "") or "")[-70:])
-        _is_flac = _extension(f.get("filename", "")) == "flac"
-        dl = _enqueue_and_wait(
-            peer=peer, files=[f], download_dir=download_dir,
-            flac_only=_is_flac, single_track_ok=True,
-            timeout_seconds=timeout_seconds, start_time=start, enforce_hires=False,
-        )
-        return _ret(dl.get("success", False), paths=dl.get("paths") or [],
-                    peer=peer, error=dl.get("error"))
+
+        # FAILOVER (audit 2026-07-05, S2): try the top matches on DISTINCT peers — one
+        # rejecting peer ('Completed, Rejected', 0 bytes) no longer sinks the acquire.
+        tried_peers: set = set()
+        last_error = None
+        for sc, peer, f in ranked:
+            if len(tried_peers) >= 3:
+                break
+            if peer in tried_peers:
+                continue
+            if _elapsed() > timeout_seconds - 20:
+                last_error = last_error or "timeout before all candidates tried"
+                break
+            tried_peers.add(peer)
+            log.info("slskd_picker: track candidate #%d score=%.1f peer=%s file=%r",
+                     len(tried_peers), sc, peer, (f.get("filename", "") or "")[-70:])
+            _is_flac = _extension(f.get("filename", "")) == "flac"
+            dl = _enqueue_and_wait(
+                peer=peer, files=[f], download_dir=download_dir,
+                flac_only=_is_flac, single_track_ok=True,
+                timeout_seconds=timeout_seconds, start_time=start, enforce_hires=False,
+            )
+            if dl.get("success"):
+                return _ret(True, paths=dl.get("paths") or [], peer=peer)
+            last_error = dl.get("error") or "download failed"
+            log.info("slskd_picker: track candidate peer=%s failed (%s) — trying next",
+                     peer, last_error)
+            try:
+                slskd_client.cancel_downloads_for_user(peer)
+            except Exception:
+                pass
+        return _ret(False, error=f"all {len(tried_peers)} track candidates failed: {last_error}")
     except Exception as e:
         log.exception("slskd_picker: acquire_track raised unexpectedly")
         return _ret(False, error=f"unexpected error: {e}")

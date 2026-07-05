@@ -193,9 +193,16 @@ def requeue_artist(artist_key: str) -> dict:
         for bk, a in albums.items():
             if (ak, bk) in existing:
                 continue
-            s.add(AutofillAction(artist=a["artist"], album=a["album"],
-                                 artist_key=ak, album_key=bk, status="queued",
-                                 track_ids_json=json.dumps(sorted(a["tids"]))))
-            queued += 1
+            # Savepoint per album: the table's UNIQUE constraint is on RAW (artist, album),
+            # so a legacy row keyed under an older normalization slips past the artist_key
+            # dedupe above and would abort the WHOLE requeue with IntegrityError.
+            try:
+                with s.begin_nested():
+                    s.add(AutofillAction(artist=a["artist"], album=a["album"],
+                                         artist_key=ak, album_key=bk, status="queued",
+                                         track_ids_json=json.dumps(sorted(a["tids"]))))
+                queued += 1
+            except Exception:
+                continue                        # already tracked under a legacy key — skip
         s.commit()
     return {"ok": True, "queued_albums": queued}

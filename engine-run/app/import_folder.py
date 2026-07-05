@@ -39,6 +39,31 @@ def manual_import_enabled() -> bool:
     return _cfg_bool("manual_import_enabled")
 
 
+_PENDING_CACHE = [0.0, 0]   # (ts, count) — os.walk over SMB is slow, so cache it
+
+
+def pending_count() -> int:
+    """Settled (fully-uploaded, past the in-flight window) audio files in the import folder that
+    are waiting to be organized — the 'staging' count for manual drops. Cached ~12s."""
+    now = time.time()
+    if now - _PENDING_CACHE[0] < 12:
+        return _PENDING_CACHE[1]
+    n = 0
+    root = _import_path()
+    if manual_import_enabled() and os.path.isdir(root):
+        for dp, dns, fns in os.walk(root):
+            dns[:] = [d for d in dns if d != "_unnecessary"]
+            for fn in fns:
+                if os.path.splitext(fn)[1].lower() in _AUDIO_EXTS:
+                    try:
+                        if now - os.path.getmtime(os.path.join(dp, fn)) >= _INFLIGHT_SECS:
+                            n += 1
+                    except OSError:
+                        pass
+    _PENDING_CACHE[0], _PENDING_CACHE[1] = now, n
+    return n
+
+
 def _import_path() -> str:
     return get_config("manual_import_path", DEFAULT_IMPORT_PATH) or DEFAULT_IMPORT_PATH
 
@@ -356,9 +381,12 @@ def manual_import_scan(dry_run: bool = False) -> dict:
 
 
 def manual_import_scan_tick() -> dict:
-    """Scheduler entry point — no-op unless the feature is enabled; honors the dry-run flag."""
+    """Scheduler entry point. Drops wait in 'staging' until the picker is running (resumed) — so
+    a paused picker leaves them staged, and resuming it organizes them onto the server."""
     if not manual_import_enabled():
         return {"skipped": "manual_import disabled"}
+    if (get_config("autofill_picker_enabled", "0") or "0") != "1":
+        return {"skipped": "picker paused — drops wait in staging until resumed"}
     return manual_import_scan(dry_run=_cfg_bool("manual_import_dry_run"))
 
 

@@ -3623,6 +3623,12 @@ def api_nas_downloader_status():
     from flask import jsonify
     from . import nas_downloader as _nd
     out = {"reachable": False, "queued": 0, "running": 0, "ready": 0, "failed": 0, "jobs": []}
+    # Manual-import drops waiting to be organized also count as 'staging'.
+    try:
+        from . import import_folder
+        out["import_pending"] = import_folder.pending_count()
+    except Exception:
+        out["import_pending"] = 0
     try:
         h = _nd._req("/healthz", timeout=3)
         out["reachable"] = bool(h.get("ok", True))

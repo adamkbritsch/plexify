@@ -256,6 +256,7 @@ struct NasDownloaderDTO: Codable {
     var running: Int?
     var ready: Int?
     var failed: Int?
+    var import_pending: Int?   // settled manual-import drops awaiting organization
     var jobs: [NasJobDTO]?
     var error: String?
 }

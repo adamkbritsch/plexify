@@ -3874,6 +3874,14 @@ def picker_tick() -> dict:
     if (get_config("autofill_picker_enabled", "0") or "0") != "1":
         out["skipped"] = "picker disabled (autofill_picker_enabled=0)"
         return out
+    # Organize any manual-import drops staged in the import folder — async so it never blocks the
+    # picker. This is why resuming the picker "puts import-folder drops on the server".
+    try:
+        from . import import_folder
+        if import_folder.manual_import_enabled() and import_folder.pending_count() > 0:
+            import_folder.start_scan_async(dry_run=False)
+    except Exception:
+        log.exception("picker_tick: manual-import kickoff failed")
     # Honor serialization
     serialize = (get_config("autofill_serialize", "1") or "1") == "1"
     if serialize:

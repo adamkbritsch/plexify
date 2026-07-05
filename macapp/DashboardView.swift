@@ -27,6 +27,8 @@ private struct PipelineStripCard: View {
         let reachable = nas?.reachable ?? false
         let running = nas?.running ?? 0
         let ready = nas?.ready ?? 0
+        let importPending = nas?.import_pending ?? 0
+        let staged = ready + importPending
         let paused = p?.paused ?? true
         HStack(spacing: 12) {
             PipeSeg(dot: reachable ? PX.ok : PX.danger, name: "NAS",
@@ -34,8 +36,11 @@ private struct PipelineStripCard: View {
                     help: reachable ? "NAS downloader (autonomous) — \(nas?.queued ?? 0) queued"
                                     : "NAS downloader unreachable — check Tailscale / NAS")
             PipeSep()
-            PipeSeg(dot: ready > 0 ? PX.warn : PX.muted, name: "Staging",
-                    value: "\(ready) ready", help: "Downloaded, awaiting organization into the library")
+            PipeSeg(dot: staged > 0 ? PX.warn : PX.muted, name: "Staging",
+                    value: "\(staged) ready",
+                    help: importPending > 0
+                        ? "\(importPending) dropped in the import folder + \(ready) downloaded — awaiting organization (resume the picker to import)"
+                        : "Downloaded, awaiting organization into the library")
             PipeSep()
             PipeSeg(dot: paused ? PX.warn : PX.ok, name: "Organizer",
                     value: paused ? "Paused" : "Active",

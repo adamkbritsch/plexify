@@ -134,11 +134,11 @@ def manual_import_scan(dry_run: bool = False) -> dict:
             except OSError:
                 log.exception("manual_import: quarantine failed for %s", path)
 
+    dir_dest: dict = {}                                    # source dir -> {dest album path: n songs}
+    # ── PASS 1: songs → library; note which album each source dir's songs landed in ──
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d != "_unnecessary"]   # never descend into our quarantine
         audio = [f for f in fns if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
-        others = [f for f in fns if os.path.splitext(f)[1].lower() not in _AUDIO_EXTS]
-        dest_counts: dict = {}                             # album folders THIS dir's songs landed in
 
         for fn in audio:
             path = os.path.join(dp, fn)
@@ -192,7 +192,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 else:
                     _dispose(path, "duplicate"); continue
             # 7. place the keeper (this dir's covers ride into the album it lands in)
-            dest_counts[dest] = dest_counts.get(dest, 0) + 1
+            dir_dest.setdefault(dp, {})[dest] = dir_dest.setdefault(dp, {}).get(dest, 0) + 1
             if dry_run:
                 _reason("upgrade" if is_upgrade else "import")
                 out["upgraded" if is_upgrade else "imported"] += 1
@@ -227,12 +227,42 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 log.exception("manual_import: place failed for %s", path)
                 _reason("place_error")
 
-        # SONGS-ONLY: keep the album cover (move it in with the songs), delete the other junk
-        # (playlists / logs / pdfs / cue / txt). Covers are NEVER deleted — an image with no
-        # matching album this run is left in place.
-        if songs_only:
-            cover_dest = max(dest_counts, key=dest_counts.get) if dest_counts else None
-            for fn in others:
+    # ── Cover→album resolver. Propagate each dir's placed album up to its ancestors, so covers in
+    # a sibling "Artwork/" subfolder attach to the album the songs landed in; fall back to matching
+    # the source folder name against an EXISTING library album (covers for already-imported albums).
+    if songs_only:
+        agg: dict = {}
+        for _d, _counts in dir_dest.items():
+            _a = _d
+            while _a != root and _a.startswith(root):
+                _ag = agg.setdefault(_a, {})
+                for _k, _v in _counts.items():
+                    _ag[_k] = _ag.get(_k, 0) + _v
+                _p = os.path.dirname(_a)
+                if _p == _a:
+                    break
+                _a = _p
+
+        def _cover_dest(cdir):
+            # A cover attaches to the album the songs in its subtree (including a sibling "Artwork/"
+            # folder) landed in THIS run — exact, no fuzzy matching. Covers with no same-drop album
+            # are dropped; the album rules / Plex supply art for any album without a local cover.
+            _a = cdir
+            while _a.startswith(root):
+                if agg.get(_a):
+                    return max(agg[_a], key=agg[_a].get)
+                if _a == root:
+                    break
+                _a = os.path.dirname(_a)
+            return None
+
+        # ── PASS 2: covers → their album (else remove); other non-song files → remove ──
+        for dp, dns, fns in os.walk(root):
+            dns[:] = [d for d in dns if d != "_unnecessary"]
+            for fn in fns:
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in _AUDIO_EXTS:
+                    continue                                # already handled in pass 1
                 path = os.path.join(dp, fn)
                 try:
                     if now - os.path.getmtime(path) < _INFLIGHT_SECS:
@@ -240,33 +270,35 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                         continue
                 except OSError:
                     continue
-                if os.path.splitext(fn)[1].lower() in _IMAGE_EXTS:
-                    if cover_dest:
+                if ext in _IMAGE_EXTS:
+                    cd = _cover_dest(dp)
+                    if cd:
                         out["covers"] += 1
                         _reason("cover")
                         if not dry_run:
                             try:
-                                os.makedirs(cover_dest, exist_ok=True)
-                                cdst = os.path.join(cover_dest, fn)
+                                os.makedirs(cd, exist_ok=True)
+                                cdst = os.path.join(cd, fn)
                                 if os.path.abspath(cdst) != os.path.abspath(path):
                                     shutil.move(path, cdst)
                                     _log_recovery_move("import_cover", path, cdst)
                             except OSError:
                                 log.exception("manual_import: cover move failed for %s", path)
-                    # image with no album this run → leave it (never delete a cover)
+                    else:
+                        _dispose(path, "orphan_cover")      # no album anywhere → remove so the folder empties
                 else:
                     _dispose(path, "non_song")
 
-    # Songs-only: remove emptied leftover folders so the drop zone stays clean.
-    if songs_only and not dry_run:
-        for _dp, _dns, _fns in os.walk(root, topdown=False):
-            if _dp == root or "_unnecessary" in _dp.split(os.sep):
-                continue
-            try:
-                if not os.listdir(_dp):
-                    os.rmdir(_dp)
-            except OSError:
-                pass
+        # Remove emptied folders so the drop zone ends up EMPTY after the import.
+        if not dry_run:
+            for _dp, _dns, _fns in os.walk(root, topdown=False):
+                if _dp == root or "_unnecessary" in _dp.split(os.sep):
+                    continue
+                try:
+                    if not os.listdir(_dp):
+                        os.rmdir(_dp)
+                except OSError:
+                    pass
 
     # Trigger a Plex library scan if we placed anything (same pattern the album rules use).
     if not dry_run and (out["imported"] or out["upgraded"]):

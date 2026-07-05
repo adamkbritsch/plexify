@@ -88,7 +88,8 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     tally; under dry_run nothing is moved/deleted."""
     from .autofill_engine import (_verify_flac_integrity, _file_title_key, _safe_for_fs,
                                    _stamp_file_tags, _album_from_db, _log_recovery_move,
-                                   _known_artists, _intent_title_keys, _LOCAL_PATH_PREFIX)
+                                   _known_artists, _intent_title_keys, _normalize_for_key,
+                                   _LOCAL_PATH_PREFIX)
 
     out = {"scanned": 0, "imported": 0, "upgraded": 0, "deleted": 0, "quarantined": 0,
            "covers": 0, "skipped_inflight": 0, "by_reason": {}, "bytes": 0, "dry_run": bool(dry_run)}
@@ -135,6 +136,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 log.exception("manual_import: quarantine failed for %s", path)
 
     dir_dest: dict = {}                                    # source dir -> {dest album path: n songs}
+    moved_by_album: dict = {}                              # (artist, album) -> [placed file paths]
     # ── PASS 1: songs → library; note which album each source dir's songs landed in ──
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d != "_unnecessary"]   # never descend into our quarantine
@@ -220,6 +222,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 except Exception:
                     pass
                 _log_recovery_move("import_upgrade" if is_upgrade else "import", path, dst)
+                moved_by_album.setdefault((artist, album), []).append(dst)
                 out["upgraded" if is_upgrade else "imported"] += 1
                 out["bytes"] += sz
                 _reason("upgrade" if is_upgrade else "import")
@@ -299,6 +302,44 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                         os.rmdir(_dp)
                 except OSError:
                     pass
+
+    # Record each imported album as an 'imported' AutofillAction so the Plexify Library reflects it
+    # (and the album rules / verify ticks track it) — same as the orphan sweep does.
+    if not dry_run and moved_by_album:
+        from .db import session_scope as _ss, AutofillAction
+        from sqlalchemy import select as _sel
+        try:
+            with _ss() as s:
+                for (a, b), paths in moved_by_album.items():
+                    ak = _normalize_for_key(a or "")
+                    bk = _normalize_for_key(b or "")
+                    row = s.scalar(_sel(AutofillAction)
+                                   .where(AutofillAction.artist_key == ak)
+                                   .where(AutofillAction.album_key == bk))
+                    if row and row.status == "complete_locked":
+                        continue                            # final stage — immutable
+                    if not row:
+                        row = AutofillAction(artist=a, album=b, artist_key=ak, album_key=bk,
+                                             status="imported", pre_existing_files=0,
+                                             source="manual-import", source_detail="Manual import")
+                        s.add(row)
+                        s.flush()
+                    else:
+                        row.status = "imported"
+                        row.source = row.source or "manual-import"
+                        row.source_detail = row.source_detail or "Manual import"
+                        row.last_attempt_at = _dt.datetime.utcnow()
+                    try:
+                        _cur = json.loads(row.imported_paths or "[]")
+                    except Exception:
+                        _cur = []
+                    _all = sorted(set(_cur) | set(paths))
+                    row.imported_paths = json.dumps(_all)
+                    row.total_size_bytes = sum(os.path.getsize(p) for p in _all if os.path.exists(p))
+                    row.note = ("manual import: %d files" % len(paths))[:1024]
+                s.commit()
+        except Exception:
+            log.exception("manual_import: recording AutofillAction rows failed")
 
     # Trigger a Plex library scan if we placed anything (same pattern the album rules use).
     if not dry_run and (out["imported"] or out["upgraded"]):

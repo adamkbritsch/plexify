@@ -801,6 +801,7 @@ def acquire_album(
         candidates: list = []
         search_budget = timeout_seconds * 0.5
 
+        zero_streak = 0
         for q in queries:
             remaining_budget = search_budget - _elapsed()
             if remaining_budget <= 4:
@@ -814,6 +815,15 @@ def acquire_album(
                 sid, wait_seconds=min(30.0, remaining_budget))
             log.info("slskd_picker: query %r got %d peer responses", q, len(responses))
             all_responses.extend(responses)
+            # The Soulseek server silently drops searches fired in quick succession
+            # (observed live 2026-07-05: identical-class queries flip between 0 and
+            # 250 peers). Space out after a zero so the next variant isn't dropped too.
+            if not responses:
+                zero_streak += 1
+                if zero_streak >= 2 and (search_budget - _elapsed()) > 20:
+                    time.sleep(8.0)
+            else:
+                zero_streak = 0
             # Re-rank after each query; stop searching once we have a clearly good dir
             # (strong score + plausible track count) — recall with no wasted wall-clock.
             candidates = _extract_candidates(
@@ -952,6 +962,7 @@ def acquire_track(
         # match exists instead of burning the whole budget.
         responses: list = []
         search_budget = timeout_seconds * 0.6
+        zero_streak = 0
         for q in _song_queries(artist, title):
             remaining_budget = search_budget - _elapsed()
             if remaining_budget <= 4:
@@ -960,8 +971,16 @@ def acquire_track(
             sid = slskd_client.search(q)
             if not sid:
                 continue
-            responses.extend(slskd_client.get_search_results(
-                sid, wait_seconds=min(25.0, remaining_budget)))
+            got = slskd_client.get_search_results(
+                sid, wait_seconds=min(25.0, remaining_budget))
+            responses.extend(got)
+            # server drops rapid-fire searches — space out after consecutive zeros
+            if not got:
+                zero_streak += 1
+                if zero_streak >= 2 and (search_budget - _elapsed()) > 15:
+                    time.sleep(8.0)
+            else:
+                zero_streak = 0
             # quick strength probe: a ≥200-score free-slot FLAC is plenty — stop searching
             _probe = None
             for r in responses:

@@ -15,6 +15,7 @@ final class PlexifyStore: ObservableObject {
     @Published var attestation: AttestStatusDTO?   // nil = still checking (treated as not-attested)
     @Published var reward: [RewardItemDTO] = []
     @Published var rewardHasMore = true
+    @Published var importRunning = false   // a manual-import scan is actively placing songs
 
     // library
     @Published var albums: [LibraryAlbumDTO] = []
@@ -65,8 +66,15 @@ final class PlexifyStore: ObservableObject {
                     await self.refreshPicker()
                     if tick % 3 == 0 { await self.refreshHealth() }          // ~6s: hits Plex/Spotify
                     if self.dashboardVisible {
-                        if tick % 3 == 0 { await self.refreshRewardHead() }
-                        if tick % 3 == 0 { await self.refreshNas() }
+                        await self.refreshImportRunning()                    // cheap local flag
+                        // While there's active work (a manual import placing songs, or an
+                        // acquisition in flight) refresh the feed + staging EVERY tick (~2s) so
+                        // new songs live-appear; otherwise fall back to the ~6s idle cadence.
+                        let busy = self.importRunning
+                            || (self.live?.downloading != nil)
+                            || ((self.picker?.in_flight ?? 0) > 0)
+                        if busy || tick % 3 == 0 { await self.refreshRewardHead() }
+                        if busy || tick % 3 == 0 { await self.refreshNas() }
                         if tick % 5 == 0 { await self.loadFill() }
                     }
                     tick += 1
@@ -93,6 +101,10 @@ final class PlexifyStore: ObservableObject {
     func refreshHealth() async { if let d: HealthDTO = await get("/api/dashboard/health") { health = d } }
     func refreshPicker() async { if let d: PickerStatusDTO = await get("/api/picker/status") { picker = d } }
     func refreshNas()    async { if let d: NasDownloaderDTO = await get("/api/nas-downloader/status") { nas = d } }
+    func refreshImportRunning() async {
+        let s = await manualImportStatus()
+        importRunning = (s["running"] as? Bool) ?? false
+    }
 
     // Refresh the first page of the feed, merging so the list doesn't flicker/reset scroll.
     func refreshRewardHead() async {

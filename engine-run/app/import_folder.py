@@ -107,6 +107,49 @@ def _find_existing(dest_dir: str, title_key: str, artist: str):
     return None
 
 
+def _record_imported_album(artist: str, album: str, new_paths: list) -> None:
+    """Upsert ONE album's 'imported' AutofillAction row in its OWN short session, committing
+    immediately — so each placed song becomes visible to the Recently-Added feed MID-SCAN
+    (the feed windows on desc(last_attempt_at) and lists every imported_paths entry as a song).
+    Idempotent: merges new_paths into imported_paths via set-union, so calling it per file
+    correctly accumulates an album's tracks across dirs. WAL + busy_timeout make these frequent
+    small commits safe against the concurrent feed reader. Never raises — a DB hiccup must not
+    abort the file-placement scan."""
+    try:
+        from .db import session_scope as _ss, AutofillAction
+        from .autofill_engine import _normalize_for_key
+        from sqlalchemy import select as _sel
+        ak = _normalize_for_key(artist or "")
+        bk = _normalize_for_key(album or "")
+        with _ss() as s:                                    # session_scope auto-commits on exit
+            row = s.scalar(_sel(AutofillAction)
+                           .where(AutofillAction.artist_key == ak)
+                           .where(AutofillAction.album_key == bk))
+            if row and row.status == "complete_locked":
+                return                                      # final stage — immutable
+            if not row:
+                row = AutofillAction(artist=artist, album=album, artist_key=ak, album_key=bk,
+                                     status="imported", pre_existing_files=0,
+                                     source="manual-import", source_detail="Manual import")
+                s.add(row)
+                s.flush()
+            else:
+                row.status = "imported"
+                row.source = row.source or "manual-import"
+                row.source_detail = row.source_detail or "Manual import"
+            row.last_attempt_at = _dt.datetime.utcnow()     # keep the row inside the feed's top-250 window
+            try:
+                _cur = json.loads(row.imported_paths or "[]")
+            except Exception:
+                _cur = []
+            _all = sorted(set(_cur) | set(new_paths))
+            row.imported_paths = json.dumps(_all)
+            row.total_size_bytes = sum(os.path.getsize(p) for p in _all if os.path.exists(p))
+            row.note = ("manual import: %d files" % len(_all))[:1024]
+    except Exception:
+        log.exception("manual_import: incremental record failed for %s / %s", artist, album)
+
+
 def manual_import_scan(dry_run: bool = False) -> dict:
     """Classify every audio file in the import folder → keep (sort into the library, upgrading a
     worse existing copy) or unnecessary (delete if the toggle is on, else quarantine). Returns a
@@ -251,6 +294,9 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 out["upgraded" if is_upgrade else "imported"] += 1
                 out["bytes"] += sz
                 _reason("upgrade" if is_upgrade else "import")
+                # Commit this album's row NOW (idempotent merge) so the song live-appears in
+                # Recently Added while the scan is still running — instead of only at the end.
+                _record_imported_album(artist, album, [dst])
             except Exception:
                 log.exception("manual_import: place failed for %s", path)
                 _reason("place_error")
@@ -328,43 +374,13 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 except OSError:
                     pass
 
-    # Record each imported album as an 'imported' AutofillAction so the Plexify Library reflects it
-    # (and the album rules / verify ticks track it) — same as the orphan sweep does.
+    # Final reconciliation: re-record each imported album (idempotent set-union merge) so every
+    # album is present even if a per-file commit above was swallowed. Per-file calls in Pass 1
+    # already made songs live-appear in Recently Added; this is a cheap safety net (one short
+    # session per album), NOT the first time these rows are written.
     if not dry_run and moved_by_album:
-        from .db import session_scope as _ss, AutofillAction
-        from sqlalchemy import select as _sel
-        try:
-            with _ss() as s:
-                for (a, b), paths in moved_by_album.items():
-                    ak = _normalize_for_key(a or "")
-                    bk = _normalize_for_key(b or "")
-                    row = s.scalar(_sel(AutofillAction)
-                                   .where(AutofillAction.artist_key == ak)
-                                   .where(AutofillAction.album_key == bk))
-                    if row and row.status == "complete_locked":
-                        continue                            # final stage — immutable
-                    if not row:
-                        row = AutofillAction(artist=a, album=b, artist_key=ak, album_key=bk,
-                                             status="imported", pre_existing_files=0,
-                                             source="manual-import", source_detail="Manual import")
-                        s.add(row)
-                        s.flush()
-                    else:
-                        row.status = "imported"
-                        row.source = row.source or "manual-import"
-                        row.source_detail = row.source_detail or "Manual import"
-                        row.last_attempt_at = _dt.datetime.utcnow()
-                    try:
-                        _cur = json.loads(row.imported_paths or "[]")
-                    except Exception:
-                        _cur = []
-                    _all = sorted(set(_cur) | set(paths))
-                    row.imported_paths = json.dumps(_all)
-                    row.total_size_bytes = sum(os.path.getsize(p) for p in _all if os.path.exists(p))
-                    row.note = ("manual import: %d files" % len(paths))[:1024]
-                s.commit()
-        except Exception:
-            log.exception("manual_import: recording AutofillAction rows failed")
+        for (a, b), paths in moved_by_album.items():
+            _record_imported_album(a, b, paths)
 
     # Trigger a Plex library scan if we placed anything (same pattern the album rules use).
     if not dry_run and (out["imported"] or out["upgraded"]):

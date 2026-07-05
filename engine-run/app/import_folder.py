@@ -150,6 +150,51 @@ def _record_imported_album(artist: str, album: str, new_paths: list) -> None:
         log.exception("manual_import: incremental record failed for %s / %s", artist, album)
 
 
+def _resolve_unmatched_for_imports(pairs) -> int:
+    """A placed song makes its wanted track no longer 'unmatched' — so DELETE the matching
+    UnmatchedTrack (target=plex) row(s) and unstick the negative cache. `pairs` = iterable of
+    (artist, title) read from the placed files' TITLE tags. Both sides are normalized through
+    _core_ta (strips '- Remastered 2015 / Mono / Live', parens, feat.) for the title and _norm_ta
+    for the artist, so 'Hey Jude - Remastered 2015' in Unmatched resolves against an imported
+    'Hey Jude'. STRICT equality on BOTH artist and title-core — a Beatles import can never clear
+    another artist's same-title row. Deletes ALL matching rows (the table has duplicates). Also
+    clears TrackMapping.plex_searched_at (only where still unmatched) so the next Plex match can
+    promote the track to 'covered' and drop it from the suggestor gap. Never raises."""
+    try:
+        from .db import session_scope as _ss, UnmatchedTrack, TrackMapping
+        from .autofill_engine import _norm_ta, _core_ta
+        from sqlalchemy import select as _sel, update as _upd
+        wanted = set()
+        for a, t in pairs:
+            ak = _norm_ta(a or "")
+            tk = _core_ta(t or "")
+            if ak and tk:
+                wanted.add((ak, tk))
+        if not wanted:
+            return 0
+        deleted = 0
+        track_ids: set = set()
+        with _ss() as s:                                    # session_scope auto-commits on exit
+            rows = list(s.scalars(
+                _sel(UnmatchedTrack).where(UnmatchedTrack.target_service == "plex")
+            ).all())
+            for r in rows:
+                if (_norm_ta(r.artist or ""), _core_ta(r.title or "")) in wanted:
+                    if r.source_track_id:
+                        track_ids.add(r.source_track_id)
+                    s.delete(r)
+                    deleted += 1
+            if track_ids:
+                s.execute(_upd(TrackMapping)
+                          .where(TrackMapping.spotify_track_id.in_(track_ids),
+                                 TrackMapping.plex_track_key.is_(None))
+                          .values(plex_searched_at=None))
+        return deleted
+    except Exception:
+        log.exception("manual_import: unmatched resolve failed")
+        return 0
+
+
 def manual_import_scan(dry_run: bool = False) -> dict:
     """Classify every audio file in the import folder → keep (sort into the library, upgrading a
     worse existing copy) or unnecessary (delete if the toggle is on, else quarantine). Returns a
@@ -205,6 +250,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
 
     dir_dest: dict = {}                                    # source dir -> {dest album path: n songs}
     moved_by_album: dict = {}                              # (artist, album) -> [placed file paths]
+    placed_titles: set = set()                             # (artist, title) of every placed song → clears Unmatched
     # ── PASS 1: songs → library; note which album each source dir's songs landed in ──
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d != "_unnecessary"]   # never descend into our quarantine
@@ -297,6 +343,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 # Commit this album's row NOW (idempotent merge) so the song live-appears in
                 # Recently Added while the scan is still running — instead of only at the end.
                 _record_imported_album(artist, album, [dst])
+                placed_titles.add((artist, title))          # this song is no longer 'unmatched'
             except Exception:
                 log.exception("manual_import: place failed for %s", path)
                 _reason("place_error")
@@ -381,6 +428,11 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     if not dry_run and moved_by_album:
         for (a, b), paths in moved_by_album.items():
             _record_imported_album(a, b, paths)
+
+    # Override the Unmatched section: every song we just placed is now present, so drop its
+    # matching UnmatchedTrack row(s) (suffix-robust, artist-scoped) and reset the negative cache.
+    if not dry_run and placed_titles:
+        out["unmatched_resolved"] = _resolve_unmatched_for_imports(placed_titles)
 
     # Trigger a Plex library scan if we placed anything (same pattern the album rules use).
     if not dry_run and (out["imported"] or out["upgraded"]):

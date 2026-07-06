@@ -2217,6 +2217,8 @@ def _feed_liked_lookup():
 _FEED_MTIME_CACHE: dict = {}
 _FEED_MISS_CACHE: dict = {}      # path -> monotonic time of last failed stat
 _FEED_INFO_CACHE: dict = {}      # path -> (title, codec, bits, rate, length, size)
+_FEED_SRC_CACHE: dict = {}       # path -> stamped source tag ("" when absent) — a mutagen
+                                 # header-read per path was the loop's REAL per-poll cost
 _FEED_MISS_TTL = 600.0
 
 
@@ -2293,7 +2295,16 @@ def api_dashboard_reward_feed():
                 # from Telegram). A bare-ISRC filename means Telegram regardless of the row source.
                 # Exact per-file provenance: the stamped source tag wins; fall back to the
                 # old heuristic (bare-ISRC name → telegram) only for pre-tag legacy files.
-                _file_src = _src_tag(_p) or ("telegram" if _ISRC_NAME_RE.match(_basename_noext) else src)
+                # Cached — the stamped tag never changes, and reading it is a mutagen
+                # header-read per path (an SMB round-trip that dominated every poll).
+                _stag = _FEED_SRC_CACHE.get(_p)
+                if _stag is None:
+                    try:
+                        _stag = _src_tag(_p) or ""
+                    except Exception:
+                        _stag = ""
+                    _FEED_SRC_CACHE[_p] = _stag
+                _file_src = _stag or ("telegram" if _ISRC_NAME_RE.match(_basename_noext) else src)
                 _b = _basename_noext.strip('_').strip()
                 _b = _re_rf.sub(r'^.*?\s+-\s+\d{1,3}\s+-\s+', '', _b)          # "Album - 03 - Title"
                 _b = _re_rf.sub(r'^\s*\d{1,3}\s*[-._)]?\s+', '', _b)           # leading track number

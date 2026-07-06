@@ -3838,6 +3838,19 @@ def picker_tick() -> dict:
     and hands off to SpotiFLAC for hi-res FLAC download.
     Serialized: one album per tick.
     """
+    # Organize any manual-import drops staged in the import folder — BEFORE the circuit
+    # breaker: the breaker reflects DOWNLOAD-provider health, and organizing local files
+    # has nothing to do with providers. (Found 2026-07-06: a provider-outage cooldown made
+    # "Run picker now" silently ignore a 343-file drop waiting in staging.) Async + gated
+    # on the enabled flags so a paused picker still leaves drops staged.
+    try:
+        from . import import_folder
+        if ((get_config("autofill_picker_enabled", "0") or "0") == "1"
+                and import_folder.manual_import_enabled()
+                and import_folder.pending_count() > 0):
+            import_folder.start_scan_async(dry_run=False)
+    except Exception:
+        log.exception("picker_tick: manual-import kickoff failed")
     # Circuit breaker: skip if recent attempts all failed providers.
     from datetime import datetime as _dt_cb
     if _PICKER_COOLDOWN_UNTIL is not None and _dt_cb.utcnow() < _PICKER_COOLDOWN_UNTIL:
@@ -3874,14 +3887,8 @@ def picker_tick() -> dict:
     if (get_config("autofill_picker_enabled", "0") or "0") != "1":
         out["skipped"] = "picker disabled (autofill_picker_enabled=0)"
         return out
-    # Organize any manual-import drops staged in the import folder — async so it never blocks the
-    # picker. This is why resuming the picker "puts import-folder drops on the server".
-    try:
-        from . import import_folder
-        if import_folder.manual_import_enabled() and import_folder.pending_count() > 0:
-            import_folder.start_scan_async(dry_run=False)
-    except Exception:
-        log.exception("picker_tick: manual-import kickoff failed")
+    # (manual-import kickoff happens at the very top of this function, before the
+    # circuit breaker — provider health must not delay organizing local drops)
     # Honor serialization
     serialize = (get_config("autofill_serialize", "1") or "1") == "1"
     if serialize:

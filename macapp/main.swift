@@ -20,6 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)   // dark mode only
         ensureMount()
+        // Periodic mount self-heal — launch/wake hooks miss network hops (leaving home,
+        // VPN flips), and a silently-dead mount corrupts every metric the engine serves.
+        Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+            self?.ensureMount()
+        }
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(onWake),
             name: NSWorkspace.didWakeNotification, object: nil)
@@ -73,20 +78,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do { try p.run(); engine = p } catch { NSLog("Plexify: engine launch failed: \(error)") }
     }
 
-    // Keep the NAS library mounted over SMB — it drops on sleep. On launch + on wake,
-    // remount via Finder using the Keychain-saved credential if it's gone.
-    // Set PLEXIFY_SMB_URL / PLEXIFY_SMB_MOUNT (env, or in your LaunchAgent plist) to your NAS.
-    let smbURL = ProcessInfo.processInfo.environment["PLEXIFY_SMB_URL"] ?? "smb://your-nas.local/Music"
+    // Keep the NAS library mounted over SMB — it drops on sleep AND whenever the Mac
+    // changes networks (leaving home kills the LAN path; only the tailnet survives).
+    // PLEXIFY_SMB_URL takes a COMMA-SEPARATED list of URLs tried in rotation — put the
+    // fast LAN form first and the Tailscale-IP form second so the mount self-heals both
+    // at home and away. Checked on launch, on wake, and every 90s (a dead mount makes
+    // the whole engine lie: empty feeds, zero pending counts, failed imports).
+    let smbURLs = (ProcessInfo.processInfo.environment["PLEXIFY_SMB_URL"] ?? "smb://your-nas.local/Music")
+        .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
     let mountPoint = ProcessInfo.processInfo.environment["PLEXIFY_SMB_MOUNT"] ?? "/Volumes/Music"
+    var mountAttempt = 0
 
     func ensureMount() {
         // Only attempt an SMB mount when one is explicitly configured — otherwise a fresh
         // install (or a non-split setup) would spam macOS "can't connect" dialogs.
         guard ProcessInfo.processInfo.environment["PLEXIFY_SMB_URL"] != nil else { return }
-        if FileManager.default.fileExists(atPath: mountPoint + "/plexify-music") { return }
+        if FileManager.default.fileExists(atPath: mountPoint + "/plexify-music") {
+            mountAttempt = 0
+            return
+        }
+        // Rotate through the configured URLs: if the previous attempt didn't take
+        // (e.g. LAN unreachable away from home), the next check tries the next form.
+        let url = smbURLs[mountAttempt % max(1, smbURLs.count)]
+        mountAttempt += 1
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = [smbURL]   // Finder mounts via the Keychain-saved credential (no prompt)
+        p.arguments = ["-g", url]   // Finder + Keychain credential; -g = don't steal focus
         try? p.run()
     }
 

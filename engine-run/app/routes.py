@@ -2209,6 +2209,17 @@ def _feed_liked_lookup():
     return data
 
 
+# Reward-feed stat caches — placed files never change, but the feed used to re-stat up to
+# 250 albums × 60 paths on EVERY poll. Over LAN that's milliseconds; over the Tailscale SMB
+# mount (away from home) it's thousands of WAN round-trips per poll — the feed took >175s
+# and starved gunicorn's worker threads (found 2026-07-06). mtimes cache forever (mtime is
+# fixed at placement), misses re-check after a TTL, audio specs cache forever (immutable).
+_FEED_MTIME_CACHE: dict = {}
+_FEED_MISS_CACHE: dict = {}      # path -> monotonic time of last failed stat
+_FEED_INFO_CACHE: dict = {}      # path -> (title, codec, bits, rate, length, size)
+_FEED_MISS_TTL = 600.0
+
+
 @bp.route("/api/dashboard/reward-feed")
 def api_dashboard_reward_feed():
     from flask import jsonify, request
@@ -2240,7 +2251,7 @@ def api_dashboard_reward_feed():
             .where(AutofillAction.status == "imported")
             .where(AutofillAction.imported_paths.isnot(None))
             .order_by(desc(AutofillAction.last_attempt_at))
-            .limit(250)
+            .limit(100)
         ).all())
         for r in rows:
             try:
@@ -2263,10 +2274,19 @@ def api_dashboard_reward_feed():
                     src = "import"
             _artist_low = (r.artist or "").strip().lower()
             for _p in paths[:60]:
-                try:
-                    _mt = _os_rf.path.getmtime(_p)
-                except Exception:
-                    continue  # file gone → skip
+                _mt = _FEED_MTIME_CACHE.get(_p)
+                if _mt is None:
+                    import time as _t_rf
+                    _missed = _FEED_MISS_CACHE.get(_p)
+                    if _missed is not None and _t_rf.monotonic() - _missed < _FEED_MISS_TTL:
+                        continue  # known-missing — don't re-stat over SMB every poll
+                    try:
+                        _mt = _os_rf.path.getmtime(_p)
+                        _FEED_MTIME_CACHE[_p] = _mt
+                        _FEED_MISS_CACHE.pop(_p, None)
+                    except Exception:
+                        _FEED_MISS_CACHE[_p] = _t_rf.monotonic()
+                        continue  # file gone → skip
                 _basename_noext = _os_rf.path.splitext(_os_rf.path.basename(_p))[0].strip()
                 # Per-FILE source: an album row carries ONE source, but a mixed album can have
                 # tracks from different sources (e.g. most from Soulseek, a few completion-filled
@@ -2310,11 +2330,17 @@ def api_dashboard_reward_feed():
         # Prefer the embedded TITLE tag for the display name — it's the real song title and
         # matches Plex. Filename-derived names are a fallback (and are a bare ISRC code for
         # Telegram-sourced files, which is the "named a number" bug).
-        _title = _audio_title(_it.get("_path"))
+        # Audio specs are immutable per placed file — cache so repeat polls don't
+        # re-read FLAC headers over the (possibly WAN) SMB mount.
+        _pth = _it.get("_path")
+        _cached = _FEED_INFO_CACHE.get(_pth)
+        if _cached is None:
+            _cached = (_audio_title(_pth), *_audio_info(_pth))
+            _FEED_INFO_CACHE[_pth] = _cached
+        _title, codec, bits, rate, length, size = _cached
         if _title:
             _it["name"] = _title
             _it["song"] = _title
-        codec, bits, rate, length, size = _audio_info(_it.get("_path"))
         tier, qlabel = _quality_tier(codec, bits, rate)
         _it["codec"] = codec
         _it["bits"] = bits

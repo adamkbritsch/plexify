@@ -300,6 +300,43 @@ def _run_job(job: dict):
         log.info("job %s FAILED: %s", job["id"], job["error"])
 
 
+def _sweep_collected():
+    """Drop ready jobs whose staged files were already COLLECTED by the organizer.
+
+    The Mac moves the audio out of the staging dir over SMB and tidies the emptied
+    dir, but the job JSON sat in ready/ until the 24h prune — so the dashboard's
+    'Staging: N ready' counted albums that were fully organized hours ago
+    (found 2026-07-06). 'ready' should mean staged-and-WAITING: once the staging
+    dir is gone (or holds nothing but the manifest/rejects), the job is done."""
+    d = os.path.join(QUEUE_DIR, "ready")
+    for fn in (list(os.listdir(d)) if os.path.isdir(d) else []):
+        if not fn.endswith(".json"):
+            continue
+        p = os.path.join(d, fn)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                job = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        sd = job.get("staging_dir")
+        if not sd:
+            continue
+        if os.path.isdir(sd):
+            try:
+                leftover = [x for x in os.listdir(sd)
+                            if x not in ("ready.json", "_rejected") and not x.startswith(".")]
+            except OSError:
+                continue                      # unreadable — leave it for the prune
+            if leftover:
+                continue                      # still waiting to be organized
+            shutil.rmtree(sd, ignore_errors=True)
+        try:
+            os.remove(p)
+            log.info("collected sweep: dropped ready job %s (%s)", job.get("id"), job.get("artist"))
+        except OSError:
+            pass
+
+
 def _prune():
     """Drop ready/failed job records + their staging dirs older than PRUNE_HOURS."""
     cut = time.time() - PRUNE_HOURS * 3600
@@ -359,6 +396,10 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + TOKEN)
 
     def do_GET(self):
+        try:
+            _sweep_collected()                # self-heal: collected jobs leave 'ready' NOW
+        except Exception:
+            log.exception("collected sweep failed (continuing)")
         counts = {st: len([f for f in (os.listdir(os.path.join(QUEUE_DIR, st))
                                        if os.path.isdir(os.path.join(QUEUE_DIR, st)) else [])
                            if f.endswith(".json")]) for st in STATES}

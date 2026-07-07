@@ -368,6 +368,48 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     dir_dest: dict = {}                                    # source dir -> {dest album path: n songs}
     moved_by_album: dict = {}                              # (artist, album) -> [placed file paths]
     placed_titles: set = set()                             # (artist, title) of every placed song → clears Unmatched
+
+    # ── PRE-PASS (parallel): the two per-file network operations — the ffmpeg full-decode
+    # integrity check AND the tag read — are what dominate wall-clock, and each is a read over
+    # the SMB mount. Away from home that mount rides Tailscale, so a big drop verified serially
+    # crawls for HOURS (found 2026-07-07: an 878-file drop looked "stuck"). Running them
+    # concurrently gives ~N× throughput because each file is network-I/O-bound, with ZERO change
+    # to rigor — every FLAC still gets the same full ffmpeg decode. Results are cached and the
+    # per-file placement loop below stays serial (all mutation is single-threaded).
+    _settled_flacs = []
+    for _dp, _dns, _fns in os.walk(root):
+        _dns[:] = [d for d in _dns if d != "_unnecessary"]
+        for _fn in _fns:
+            if os.path.splitext(_fn)[1].lower() == ".flac":
+                _p = os.path.join(_dp, _fn)
+                try:
+                    if now - os.path.getmtime(_p) >= _INFLIGHT_SECS:
+                        _settled_flacs.append(_p)
+                except OSError:
+                    pass
+    _verified: dict = {}
+    _tags_cache: dict = {}
+    if _settled_flacs:
+        from concurrent.futures import ThreadPoolExecutor
+        def _inspect(p):
+            try:
+                intact, bad = _verify_flac_integrity([p])
+                ok = bool(intact and not bad)
+                return p, ok, (_read_tags(p) if ok else None)
+            except Exception:
+                return p, False, None
+        _workers = min(16, max(4, len(_settled_flacs)))
+        try:
+            with ThreadPoolExecutor(max_workers=_workers, thread_name_prefix="import-verify") as _ex:
+                for _rp, _ok, _tg in _ex.map(_inspect, _settled_flacs):
+                    _verified[_rp] = _ok
+                    if _tg is not None:
+                        _tags_cache[_rp] = _tg
+        except Exception:
+            log.exception("manual_import: parallel pre-verify failed — falling back to serial")
+        log.info("manual_import: pre-verify %d/%d FLAC intact (%d parallel workers)",
+                 sum(1 for v in _verified.values() if v), len(_settled_flacs), _workers)
+
     # ── PASS 1: songs → library; note which album each source dir's songs landed in ──
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d != "_unnecessary"]   # never descend into our quarantine
@@ -387,12 +429,18 @@ def manual_import_scan(dry_run: bool = False) -> dict:
             # 1. lossy → discard (FLAC only)
             if ext != ".flac":
                 _dispose(path, "lossy"); continue
-            # 2. integrity (FLAC magic + ffmpeg decode)
-            intact, bad = _verify_flac_integrity([path])
-            if bad or not intact:
-                _dispose(path, "corrupt"); continue
+            # 2. integrity — resolved by the parallel pre-pass (same full ffmpeg decode, just
+            # run concurrently above). Fall back to a serial verify only for the rare file the
+            # pre-pass didn't cover (e.g. it settled between the two walks).
+            if path in _verified:
+                if not _verified[path]:
+                    _dispose(path, "corrupt"); continue
+            else:
+                intact, bad = _verify_flac_integrity([path])
+                if bad or not intact:
+                    _dispose(path, "corrupt"); continue
             # 3. non-music / tiny-clip gate (conservative — keep when unsure)
-            artist, album, title, genre, dur = _read_tags(path)
+            artist, album, title, genre, dur = _tags_cache.get(path) or _read_tags(path)
             if dur and min_sec > 0 and dur < min_sec:
                 _dispose(path, "tiny"); continue
             if genre and genre.strip().lower() in _NONMUSIC_GENRES:

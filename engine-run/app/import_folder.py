@@ -41,28 +41,47 @@ def manual_import_enabled() -> bool:
 
 
 _PENDING_CACHE = [0.0, 0]   # (ts, count) — os.walk over SMB is slow, so cache it
+_PENDING_REFRESHING = [False]
+
+
+def _pending_walk() -> None:
+    """The actual (SMB) count walk — run OFF the request path so a slow mount can't hang callers."""
+    try:
+        n = 0
+        root = _import_path()
+        now = time.time()
+        if manual_import_enabled() and os.path.isdir(root):
+            for dp, dns, fns in os.walk(root):
+                dns[:] = [d for d in dns if d != "_unnecessary"]
+                for fn in fns:
+                    if os.path.splitext(fn)[1].lower() in _AUDIO_EXTS:
+                        try:
+                            if now - os.path.getmtime(os.path.join(dp, fn)) >= _INFLIGHT_SECS:
+                                n += 1
+                        except OSError:
+                            pass
+        _PENDING_CACHE[0], _PENDING_CACHE[1] = time.time(), n
+    except Exception:
+        log.exception("pending_count: background walk failed")
+    finally:
+        _PENDING_REFRESHING[0] = False
 
 
 def pending_count() -> int:
-    """Settled (fully-uploaded, past the in-flight window) audio files in the import folder that
-    are waiting to be organized — the 'staging' count for manual drops. Cached ~12s."""
-    now = time.time()
-    if now - _PENDING_CACHE[0] < 12:
-        return _PENDING_CACHE[1]
-    n = 0
-    root = _import_path()
-    if manual_import_enabled() and os.path.isdir(root):
-        for dp, dns, fns in os.walk(root):
-            dns[:] = [d for d in dns if d != "_unnecessary"]
-            for fn in fns:
-                if os.path.splitext(fn)[1].lower() in _AUDIO_EXTS:
-                    try:
-                        if now - os.path.getmtime(os.path.join(dp, fn)) >= _INFLIGHT_SECS:
-                            n += 1
-                    except OSError:
-                        pass
-    _PENDING_CACHE[0], _PENDING_CACHE[1] = now, n
-    return n
+    """Settled (fully-uploaded, past the in-flight window) audio files in the import folder waiting
+    to be organized — the 'staging' count for manual drops.
+
+    NEVER BLOCKS: serves the cached value and refreshes in a background thread. The walk stats
+    every file over the (possibly WAN/Tailscale) SMB mount, and under a heavy import that walk can
+    take 30s+ — doing it synchronously hung the dashboard's NAS-status poll and made the NAS look
+    UNREACHABLE (found 2026-07-07). Serve-stale + single-flight async refresh fixes that; the count
+    trails reality by a poll or two, which is fine for a 'staging' indicator."""
+    if not manual_import_enabled():
+        return 0
+    if time.time() - _PENDING_CACHE[0] >= 12 and not _PENDING_REFRESHING[0]:
+        _PENDING_REFRESHING[0] = True
+        threading.Thread(target=_pending_walk, daemon=True, name="pending-count").start()
+    return _PENDING_CACHE[1]
 
 
 def _import_path() -> str:
@@ -369,51 +388,50 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     moved_by_album: dict = {}                              # (artist, album) -> [placed file paths]
     placed_titles: set = set()                             # (artist, title) of every placed song → clears Unmatched
 
-    # ── PRE-PASS (parallel): the two per-file network operations — the ffmpeg full-decode
-    # integrity check AND the tag read — are what dominate wall-clock, and each is a read over
-    # the SMB mount. Away from home that mount rides Tailscale, so a big drop verified serially
-    # crawls for HOURS (found 2026-07-07: an 878-file drop looked "stuck"). Running them
-    # concurrently gives ~N× throughput because each file is network-I/O-bound, with ZERO change
-    # to rigor — every FLAC still gets the same full ffmpeg decode. Results are cached and the
-    # per-file placement loop below stays serial (all mutation is single-threaded).
-    _settled_flacs = []
-    for _dp, _dns, _fns in os.walk(root):
-        _dns[:] = [d for d in _dns if d != "_unnecessary"]
-        for _fn in _fns:
-            if os.path.splitext(_fn)[1].lower() == ".flac":
-                _p = os.path.join(_dp, _fn)
-                try:
-                    if now - os.path.getmtime(_p) >= _INFLIGHT_SECS:
-                        _settled_flacs.append(_p)
-                except OSError:
-                    pass
-    _verified: dict = {}
-    _tags_cache: dict = {}
-    if _settled_flacs:
-        from concurrent.futures import ThreadPoolExecutor
-        def _inspect(p):
-            try:
-                intact, bad = _verify_flac_integrity([p])
-                ok = bool(intact and not bad)
-                return p, ok, (_read_tags(p) if ok else None)
-            except Exception:
-                return p, False, None
-        _workers = min(16, max(4, len(_settled_flacs)))
+    def _inspect_flac(p):
+        """(path, intact, tags) for one FLAC — the ffmpeg full-decode + tag read, the two
+        per-file network reads that dominate wall-clock over an SMB (esp. WAN/Tailscale) mount."""
         try:
-            with ThreadPoolExecutor(max_workers=_workers, thread_name_prefix="import-verify") as _ex:
-                for _rp, _ok, _tg in _ex.map(_inspect, _settled_flacs):
-                    _verified[_rp] = _ok
-                    if _tg is not None:
-                        _tags_cache[_rp] = _tg
+            intact, bad = _verify_flac_integrity([p])
+            ok = bool(intact and not bad)
+            return p, ok, (_read_tags(p) if ok else None)
         except Exception:
-            log.exception("manual_import: parallel pre-verify failed — falling back to serial")
-        log.info("manual_import: pre-verify %d/%d FLAC intact (%d parallel workers)",
-                 sum(1 for v in _verified.values() if v), len(_settled_flacs), _workers)
+            return p, False, None
 
     # ── PASS 1: songs → library; note which album each source dir's songs landed in ──
+    # Verify + read tags for each directory's FLACs IN PARALLEL (bounded 8 workers) before the
+    # serial placement loop for that directory. Each file is network-I/O-bound, so concurrent
+    # reads give a big speedup — but keeping it PER-DIRECTORY (not one giant up-front pass) means
+    # (a) each album's songs place together, so the staging count drops STEADILY instead of
+    # sitting stuck while everything verifies, and (b) peak concurrency is capped at 8, so it
+    # doesn't saturate the WAN link hard enough to starve the NAS health-check (found 2026-07-07:
+    # a 16-wide up-front pass made the dashboard show 'NAS unreachable' + no visible progress).
+    from concurrent.futures import ThreadPoolExecutor
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d != "_unnecessary"]   # never descend into our quarantine
         audio = [f for f in fns if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
+
+        _verified: dict = {}
+        _tags_cache: dict = {}
+        _dir_flacs = []
+        for _fn in audio:
+            if os.path.splitext(_fn)[1].lower() == ".flac":
+                _p = os.path.join(dp, _fn)
+                try:
+                    if now - os.path.getmtime(_p) >= _INFLIGHT_SECS:
+                        _dir_flacs.append(_p)
+                except OSError:
+                    pass
+        if _dir_flacs:
+            try:
+                with ThreadPoolExecutor(max_workers=min(8, len(_dir_flacs)),
+                                        thread_name_prefix="import-verify") as _ex:
+                    for _rp, _ok, _tg in _ex.map(_inspect_flac, _dir_flacs):
+                        _verified[_rp] = _ok
+                        if _tg is not None:
+                            _tags_cache[_rp] = _tg
+            except Exception:
+                log.exception("manual_import: parallel verify failed for %s — falling back to serial", dp)
 
         for fn in audio:
             path = os.path.join(dp, fn)

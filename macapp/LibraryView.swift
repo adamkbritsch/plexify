@@ -57,8 +57,17 @@ struct LibraryView: View {
             }
             Text(countText).font(.system(size: 12)).foregroundStyle(PX.muted).padding(.leading, 8)
             Spacer()
-            Button { } label: { Label("Condense Library", systemImage: "archivebox") }
-                .buttonStyle(PrimaryButtonStyle())
+            Button { Task { await store.condenseNow() } } label: {
+                Label(store.condense?.state == "running"
+                        ? (store.condense?.phase ?? "Condensing…")
+                        : "Condense Library",
+                      systemImage: "archivebox")
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(store.condense?.state == "running")
+            .help("Run the album rulebook now: merge duplicate album tiles, de-dupe tracks, and "
+                  + "re-home mis-filed albums. Normally runs every 2h, but this Mac's scheduler is "
+                  + "UI-only, so trigger it here.")
         }
     }
 

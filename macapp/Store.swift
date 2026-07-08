@@ -158,6 +158,25 @@ final class PlexifyStore: ObservableObject {
 
     // MARK: - library
 
+    // MARK: - condense (album rulebook on demand)
+
+    @Published var condense: CondenseStatusDTO?
+
+    func condenseNow() async {
+        guard condense?.state != "running" else { return }
+        condense = CondenseStatusDTO(state: "running", phase: "Starting…")
+        _ = await post("/library/condense-now")
+        // poll until done/error (condense runs on the engine; ~up to 20 min for a big first pass)
+        for _ in 0..<600 {
+            if let d: CondenseStatusDTO = await get("/library/condense-status") {
+                condense = d
+                if d.state == "done" || d.state == "error" || d.state == "idle" { break }
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        await loadAlbums()   // refresh the library view after consolidating
+    }
+
     func loadAlbums(q: String = "", filter: String = "all", sort: String = "recent",
                     source: String = "", reset: Bool = true) async {
         let off = reset ? 0 : albums.count

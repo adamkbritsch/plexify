@@ -141,6 +141,18 @@ struct LibraryAlbumsDTO: Codable {
     var total: Int?
 }
 
+// Condense (/library/condense-{now,status}) — runs the album rulebook on demand
+struct CondenseStatusDTO: Codable {
+    var state: String?      // idle | running | done | error
+    var phase: String?
+    var merged: Int?
+    var deduped: Int?
+    var rehomed: Int?
+    var hidden: Int?
+    var tiles: Int?
+    var error: String?
+}
+
 struct LibraryArtistDTO: Codable, Identifiable, Hashable {
     var artist: String?
     var albums: Int?

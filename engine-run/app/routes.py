@@ -1278,9 +1278,15 @@ def _condense_runner():
             if not any(r.get(k) for k in ("r2_merged", "r3_atticed", "r4_rehomed", "r2_hidden")):
                 break
         setp(phase="Reconciling Plex tiles")
-        for _ in range(12):
+        # Cover the WHOLE library in one pass. The scheduled tick windows 400 artists at a time
+        # off a rotating cursor (bounded cost every 2h), but on-demand Condense must be complete —
+        # with a 400-window over a 1144-artist library the loop hit a 0-merge window and broke
+        # before reaching Pink Floyd/Smiths/Beatles, so duplicate co-located tiles never merged
+        # (found 2026-07-07). Reset the cursor and use an unbounded window.
+        set_config("tile_reconcile_cursor", "0")
+        for _ in range(3):
             try:
-                tr = ae.plex_tile_reconcile_tick(window=400, max_merges=80)
+                tr = ae.plex_tile_reconcile_tick(window=1_000_000, max_merges=1_000_000)
             except Exception:
                 tr = {}
             tot["tiles"] += int(tr.get("merged", 0) or 0)

@@ -274,7 +274,7 @@ struct SettingsView: View {
                     label2("Keep songs only", "delete non-song files (playlists, logs, pdfs) too; album covers are kept and filed with the songs")
                 }.toggleStyle(.switch).tint(PX.plex)
                 Toggle(isOn: $importRequireLiked) {
-                    label2("Only import music in my Spotify", "stricter — also discard FLAC that doesn't match a liked / playlist song")
+                    label2("Only import music in my Spotify", "keep only music you have in Spotify, at your downloading granularity (song / album / discography). Scanning also trims already-imported non-Spotify music to a recoverable __autofill_pruned folder.")
                 }.toggleStyle(.switch).tint(PX.plex)
                 HStack(spacing: 12) {
                     Button { runImport(dry: true) } label: { Text("Preview") }
@@ -318,9 +318,11 @@ struct SettingsView: View {
                         let sc = d["scanned"] as? Int ?? 0
                         let by = (d["by_reason"] as? [String: Any])?
                             .map { "\($0.key) \($0.value)" }.sorted().joined(separator: ", ") ?? ""
-                        importStatus = dry
+                        let trim = d["spotify_trim_files"] as? Int ?? 0
+                        let trimStr = trim > 0 ? " · \(dry ? "would trim" : "trimmed") \(trim) non-Spotify file\(trim == 1 ? "" : "s")" : ""
+                        importStatus = (dry
                             ? "would import \(imp)\(up > 0 ? " (+\(up) upgrade)" : "") of \(sc) scanned — \(by)"
-                            : "imported \(imp), \(up) upgraded, \(del) deleted, \(q) quarantined"
+                            : "imported \(imp), \(up) upgraded, \(del) deleted, \(q) quarantined") + trimStr
                     } else {
                         importStatus = (d["error"] as? String) ?? "failed"
                     }

@@ -86,7 +86,7 @@ final class PlexifyStore: ObservableObject {
 
     func refreshAll() async {
         await loadAttestStatus()
-        await refreshLive(); await refreshHealth(); await refreshPicker(); await refreshNas()
+        await refreshLive(); await refreshHealth(); await refreshPicker(); await refreshNas(fresh: true)
         await refreshRewardHead()
     }
 
@@ -100,7 +100,12 @@ final class PlexifyStore: ObservableObject {
     func refreshLive()   async { if let d: LiveDTO = await get("/api/dashboard/live") { live = d; lastRefresh = Date() } }
     func refreshHealth() async { if let d: HealthDTO = await get("/api/dashboard/health") { health = d } }
     func refreshPicker() async { if let d: PickerStatusDTO = await get("/api/picker/status") { picker = d } }
-    func refreshNas()    async { if let d: NasDownloaderDTO = await get("/api/nas-downloader/status") { nas = d } }
+    // fresh=true (manual Refresh) forces a live recount of the staging/import-pending value;
+    // background polls leave it off so they stay cheap.
+    func refreshNas(fresh: Bool = false) async {
+        let path = fresh ? "/api/nas-downloader/status?fresh=1" : "/api/nas-downloader/status"
+        if let d: NasDownloaderDTO = await get(path) { nas = d }
+    }
     func refreshImportRunning() async {
         let s = await manualImportStatus()
         importRunning = (s["running"] as? Bool) ?? false

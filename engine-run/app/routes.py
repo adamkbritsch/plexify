@@ -3666,13 +3666,16 @@ def api_nas_downloader_status():
     split. Proxies the daemon's /healthz + /queue (via nas_downloader's Tailscale→LAN
     fallback + bearer token) so the Mac dashboard can show the download pipeline. Short
     timeouts + best-effort so a sleeping NAS never hangs the dashboard poll."""
-    from flask import jsonify
+    from flask import jsonify, request
     from . import nas_downloader as _nd
     out = {"reachable": False, "queued": 0, "running": 0, "ready": 0, "failed": 0, "jobs": []}
-    # Manual-import drops waiting to be organized also count as 'staging'.
+    # Manual-import drops waiting to be organized also count as 'staging'. The manual Refresh
+    # button passes ?fresh=1 to force a live recount (bounded so it never hangs over WAN);
+    # background polls use the cheap cached value.
+    _fresh = request.args.get("fresh") == "1"
     try:
         from . import import_folder
-        out["import_pending"] = import_folder.pending_count()
+        out["import_pending"] = import_folder.pending_count(force=_fresh)
     except Exception:
         out["import_pending"] = 0
     try:

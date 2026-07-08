@@ -42,6 +42,8 @@ def manual_import_enabled() -> bool:
 
 _PENDING_CACHE = [0.0, 0]   # (ts, count) — os.walk over SMB is slow, so cache it
 _PENDING_REFRESHING = [False]
+_PENDING_THREAD = [None]     # handle to the in-flight walk so a forced refresh can join it
+_SCAN_REMAINING = [None]     # live countdown published BY a running scan (None = no scan active)
 
 
 def _pending_walk() -> None:
@@ -67,20 +69,39 @@ def _pending_walk() -> None:
         _PENDING_REFRESHING[0] = False
 
 
-def pending_count() -> int:
+def pending_count(force: bool = False, wait: float = 3.0) -> int:
     """Settled (fully-uploaded, past the in-flight window) audio files in the import folder waiting
     to be organized — the 'staging' count for manual drops.
 
-    NEVER BLOCKS: serves the cached value and refreshes in a background thread. The walk stats
-    every file over the (possibly WAN/Tailscale) SMB mount, and under a heavy import that walk can
-    take 30s+ — doing it synchronously hung the dashboard's NAS-status poll and made the NAS look
-    UNREACHABLE (found 2026-07-07). Serve-stale + single-flight async refresh fixes that; the count
-    trails reality by a poll or two, which is fine for a 'staging' indicator."""
+    Normally NEVER BLOCKS: serves the cached value and refreshes in a background thread. The walk
+    stats every file over the (possibly WAN/Tailscale) SMB mount, and under a heavy import that
+    walk can take 30s+ — doing it synchronously hung the dashboard's NAS-status poll and made the
+    NAS look UNREACHABLE (found 2026-07-07). Serve-stale + single-flight async refresh fixes that.
+
+    force=True (the manual Refresh button) kicks the walk immediately and BLOCKS up to `wait`
+    seconds for it: on a fast (LAN) mount the walk finishes well inside that and the caller sees
+    the true count; on a slow (WAN) mount the join times out and returns the last value while the
+    walk keeps running in the background — so Refresh reflects reality when it can, and never
+    hangs the UI when it can't."""
     if not manual_import_enabled():
         return 0
-    if time.time() - _PENDING_CACHE[0] >= 12 and not _PENDING_REFRESHING[0]:
+    # While a scan is ACTIVELY draining the folder, serve its own live countdown instead of
+    # walking the folder: the walk competes with the scan's verify reads for the SMB link and
+    # under WAN load never finishes in time, so the count would sit frozen (found 2026-07-07).
+    # The scan decrements this per file it processes — cheap, accurate, no I/O. Guarded on the
+    # running flag so a crashed scan can't strand a stale value.
+    if _SCAN_REMAINING[0] is not None and (get_config("manual_import_running", "0") or "0") == "1":
+        return max(0, _SCAN_REMAINING[0])
+    now = time.time()
+    if (force or now - _PENDING_CACHE[0] >= 12) and not _PENDING_REFRESHING[0]:
         _PENDING_REFRESHING[0] = True
-        threading.Thread(target=_pending_walk, daemon=True, name="pending-count").start()
+        th = threading.Thread(target=_pending_walk, daemon=True, name="pending-count")
+        _PENDING_THREAD[0] = th
+        th.start()
+    if force:
+        th = _PENDING_THREAD[0]
+        if th is not None and th.is_alive():
+            th.join(max(0.1, wait))
     return _PENDING_CACHE[1]
 
 
@@ -388,6 +409,14 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     moved_by_album: dict = {}                              # (artist, album) -> [placed file paths]
     placed_titles: set = set()                             # (artist, title) of every placed song → clears Unmatched
 
+    # Seed the live staging countdown from the last-known folder count (warm cache = instant); a
+    # cold cache gets one synchronous count. The placement loop decrements it per file, so the
+    # dashboard shows a smooth drain without re-walking the SMB folder under load.
+    if not dry_run:
+        if _PENDING_CACHE[1] <= 0:
+            _pending_walk()
+        _SCAN_REMAINING[0] = _PENDING_CACHE[1]
+
     def _inspect_flac(p):
         """(path, intact, tags) for one FLAC — the ffmpeg full-decode + tag read, the two
         per-file network reads that dominate wall-clock over an SMB (esp. WAN/Tailscale) mount."""
@@ -443,6 +472,10 @@ def manual_import_scan(dry_run: bool = False) -> dict:
             except OSError:
                 continue
             out["scanned"] += 1
+            # every settled audio file processed here leaves the folder (placed or disposed) →
+            # tick the live staging countdown down by one
+            if not dry_run and _SCAN_REMAINING[0] is not None:
+                _SCAN_REMAINING[0] = max(0, _SCAN_REMAINING[0] - 1)
 
             # 1. lossy → discard (FLAC only)
             if ext != ".flac":
@@ -635,6 +668,8 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     if not dry_run and _rematch_seeds:
         _schedule_import_rematch(_rematch_seeds)
 
+    if not dry_run:
+        _SCAN_REMAINING[0] = None       # folder drained — resume folder-walk counting
     log.info("manual_import_scan(dry_run=%s): %s", dry_run, out)
     return out
 
@@ -680,6 +715,7 @@ def start_scan_async(dry_run: bool) -> bool:
             log.exception("manual_import: async %s failed", kind)
             _stash(kind, {"ok": False, "error": str(e)[:200]})
         finally:
+            _SCAN_REMAINING[0] = None    # always clear the countdown, even if the scan raised
             set_config("manual_import_running", "0")
             _SCAN_LOCK.release()
 

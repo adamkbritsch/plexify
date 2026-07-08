@@ -5093,8 +5093,13 @@ def discography_refresh_tick() -> dict:
 # Safe: moves to /Volumes/MediaVolume3/plexify-music/__autofill_pruned/{YYYY-MM-DD}/{artist}/{album}/
 # (never deletes). User can rm whenever they're confident.
 # ====================================================================
-def apply_mode_to_library(*, dry_run: bool = True, new_mode: Optional[str] = None) -> dict:
+def apply_mode_to_library(*, dry_run: bool = True, new_mode: Optional[str] = None,
+                          source: Optional[str] = None) -> dict:
     """Compute (and optionally apply) the prune set for switching to new_mode.
+
+    source=None → the WHOLE Plexify library (the downloading mode-sync). source='manual-import'
+    → only manually-imported content (the 'only import music in my Spotify' setting) so it never
+    touches picker-acquired albums (which would re-trigger acquisition churn).
 
     Returns {target_mode, rows_total, rows_in_scope, rows_pruned, files_pruned,
              bytes_pruned, pruned_to_dir, samples}.
@@ -5110,34 +5115,34 @@ def apply_mode_to_library(*, dry_run: bool = True, new_mode: Optional[str] = Non
         out["error"] = f"unknown mode {mode!r}"
         return out
 
-    # Scope rules:
-    #  song:  keep only files whose basename matches the EXACT spotify track title
-    #         (per AutofillAction.track_ids_json + LocalTrack.title)
-    #  album: keep all files from rows whose (artist, album) appear in LocalTrack
-    #  discography: keep all files for ANY artist with ≥1 LocalTrack row
-    from .db import LocalTrack
+    # Scope = "my Spotify" = LIKED songs ∪ PLAYLIST tracks (was playlist-only, which wrongly
+    # pruned albums/artists you only LIKED). Album matching keys on the CORE name (edition tags
+    # in (…)/[…] stripped) so a box-set/remaster/Japan-pressing of an album you have still counts.
+    #  song:        keep files whose basename matches an exact spotify track title
+    #  album:       keep all files from albums whose CORE name you have a spotify song from
+    #  discography: keep all files for ANY artist you have a spotify song from
+    _core = _album_core_key
+    from .db import LocalTrack, SpotifyLikedTrack
     with session_scope() as s:
-        local_artists = {r[0] for r in s.execute(
-            select(LocalTrack.artist).distinct()
-        ).all() if r[0]}
-        local_artist_album = {(r[0], r[1]) for r in s.execute(
-            select(LocalTrack.artist, LocalTrack.album).distinct()
-        ).all() if r[0]}
-        # For song mode, build a map of (artist, album) -> set of expected track titles
-        if mode == "song":
-            local_titles_by_album: dict[tuple[str, str], set[str]] = {}
+        local_artists: set = set()                                   # normalized artist keys
+        local_artist_album: set = set()                             # (artist_key, album_CORE)
+        local_titles_by_album: dict[tuple[str, str], set[str]] = {}
+        for _M in (LocalTrack, SpotifyLikedTrack):
             for art, alb, title in s.execute(
-                select(LocalTrack.artist, LocalTrack.album, LocalTrack.title)
-            ).all():
+                    select(_M.artist, _M.album, _M.title)).all():
                 if not art:
                     continue
-                key = (_normalize_for_key(art), _normalize_for_key(alb or ""))
-                local_titles_by_album.setdefault(key, set()).add(_normalize_for_key(title or ""))
+                an = _normalize_for_key(art)
+                bc = _core(alb)
+                local_artists.add(an)
+                local_artist_album.add((an, bc))
+                if mode == "song":
+                    local_titles_by_album.setdefault((an, bc), set()).add(_normalize_for_key(title or ""))
 
-        rows = list(s.scalars(
-            select(AutofillAction)
-            .where(AutofillAction.imported_paths.isnot(None))
-        ).all())
+        _q = select(AutofillAction).where(AutofillAction.imported_paths.isnot(None))
+        if source:
+            _q = _q.where(AutofillAction.source == source)
+        rows = list(s.scalars(_q).all())
 
     out["rows_total"] = len(rows)
     pruned_dir_base = f"/Volumes/MediaVolume3/plexify-music/__autofill_pruned/{datetime.utcnow().strftime('%Y-%m-%d_%H%M')}"
@@ -5152,23 +5157,19 @@ def apply_mode_to_library(*, dry_run: bool = True, new_mode: Optional[str] = Non
             continue
 
         artist_key = r.artist_key or _normalize_for_key(r.artist)
-        album_key = r.album_key or _normalize_for_key(r.album)
+        album_core = (artist_key, _core(r.album))
 
         # Determine scope for this row's files
         if mode == "discography":
-            in_scope = (r.artist in local_artists) or any(
-                _normalize_for_key(a) == artist_key for a in local_artists)
+            in_scope = artist_key in local_artists
             files_in_scope = list(paths) if in_scope else []
             files_out = [] if in_scope else list(paths)
         elif mode == "album":
-            in_scope = (artist_key, album_key) in {
-                (_normalize_for_key(a), _normalize_for_key(b))
-                for (a, b) in local_artist_album
-            }
+            in_scope = album_core in local_artist_album
             files_in_scope = list(paths) if in_scope else []
             files_out = [] if in_scope else list(paths)
         elif mode == "song":
-            wanted_titles = local_titles_by_album.get((artist_key, album_key), set())
+            wanted_titles = local_titles_by_album.get(album_core, set())
             files_in_scope = []
             files_out = []
             for p in paths:
@@ -6527,6 +6528,44 @@ def cover_identity_tick(id_batch: int = 80, cover_batch: int = 15, merge_batch: 
 
 _INTENT_KEYS_CACHE: tuple = (0.0, frozenset())
 _INTENT_ARTISTS_CACHE: tuple = (0.0, {})
+_SCOPE_SETS_CACHE: tuple = (0.0, None)
+
+
+def _album_core_key(name: str) -> str:
+    """Album key for scope matching: strip (…)/[…] edition tags (box set, remaster, Japan
+    pressing, disc N…) then normalize — so an edition of an album you have still matches its
+    standard release."""
+    import re as _re
+    return _normalize_for_key(_re.sub(r'[\(\[].*?[\)\]]', ' ', name or ''))
+
+
+def _spotify_scope_sets() -> tuple:
+    """'My Spotify' = LIKED songs ∪ PLAYLIST tracks. Returns (artist_keys, (artist_key, album_core))
+    for the import 'only my Spotify' filter's album/discography granularities. 30-min cache
+    (matches _intent_title_keys, which covers the song granularity)."""
+    global _SCOPE_SETS_CACHE
+    ts, vals = _SCOPE_SETS_CACHE
+    if time.time() - ts < 1800 and vals:
+        return vals
+    arts, albs = set(), set()
+    try:
+        from .db import SessionLocal, SpotifyLikedTrack, LocalTrack
+        with SessionLocal() as s_:
+            for _M in (SpotifyLikedTrack, LocalTrack):
+                for art, alb in s_.query(_M.artist, _M.album).all():
+                    if not art:
+                        continue
+                    an = _normalize_for_key(art)
+                    arts.add(an)
+                    albs.add((an, _album_core_key(alb)))
+    except Exception:
+        log.exception("_spotify_scope_sets failed")
+    arts.discard("")
+    val = (frozenset(arts), frozenset(albs))
+    if arts:
+        _SCOPE_SETS_CACHE = (time.time(), val)
+    return val
+
 
 def _intent_title_keys() -> frozenset:
     """Title keys of every song the user actually asked for (liked songs +

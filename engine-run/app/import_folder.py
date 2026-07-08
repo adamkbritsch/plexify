@@ -375,7 +375,7 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     from .autofill_engine import (_verify_flac_integrity, _file_title_key, _safe_for_fs,
                                    _stamp_file_tags, _album_from_db, _log_recovery_move,
                                    _known_artists, _intent_title_keys, _normalize_for_key,
-                                   _LOCAL_PATH_PREFIX)
+                                   _album_core_key, _LOCAL_PATH_PREFIX)
 
     out = {"scanned": 0, "imported": 0, "upgraded": 0, "deleted": 0, "quarantined": 0,
            "covers": 0, "skipped_inflight": 0, "by_reason": {}, "bytes": 0, "dry_run": bool(dry_run)}
@@ -386,6 +386,17 @@ def manual_import_scan(dry_run: bool = False) -> dict:
 
     MUSIC = _LOCAL_PATH_PREFIX
     require_liked = _cfg_bool("manual_import_require_liked")
+    # "only import music in my Spotify" enforces the DOWNLOADING granularity (song/album/
+    # discography): song = exact liked/playlist title, album = albums you have a Spotify song from
+    # (core name), discography = artists you have a Spotify song from.
+    _import_mode = (get_config("autofill_acquisition_mode", "album") or "album").lower() if require_liked else "album"
+    _scope_arts, _scope_albs = frozenset(), frozenset()
+    if require_liked and _import_mode in ("album", "discography"):
+        try:
+            from .autofill_engine import _spotify_scope_sets
+            _scope_arts, _scope_albs = _spotify_scope_sets()
+        except Exception:
+            log.exception("manual_import: scope sets failed")
     delete_mode = _cfg_bool("manual_import_delete_unnecessary")
     songs_only = _cfg_bool("manual_import_songs_only")   # keep only songs (+ covers); delete other junk
     try:
@@ -526,10 +537,19 @@ def manual_import_scan(dry_run: bool = False) -> dict:
                 album = _album_from_db(title, artist) or album
             if not artist or not album:
                 _dispose(path, "unattributable"); continue
-            # 5. optional strict mode — only music matching a liked/playlist song
+            # 5. "only import music in my Spotify" — at the downloading-mode granularity
             tkey = _file_title_key(path, artist)
-            if require_liked and tkey and tkey not in _intent_title_keys():
-                _dispose(path, "not_wanted"); continue
+            if require_liked:
+                _ak = _normalize_for_key(artist)
+                if _import_mode == "discography":
+                    if _ak not in _scope_arts:
+                        _dispose(path, "not_wanted"); continue
+                elif _import_mode == "song":
+                    if tkey and tkey not in _intent_title_keys():
+                        _dispose(path, "not_wanted"); continue
+                else:  # album (default)
+                    if (_ak, _album_core_key(album)) not in _scope_albs:
+                        _dispose(path, "not_wanted"); continue
             # 6. dedup + upgrade-if-better
             dest = os.path.join(MUSIC, _safe_for_fs(artist), _safe_for_fs(album, "Unknown Album"))
             existing = _find_existing(dest, tkey, artist)
@@ -683,6 +703,21 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     # flags climb to truth as Plex finishes indexing. Non-blocking → the scan returns immediately.
     if not dry_run and _rematch_seeds:
         _schedule_import_rematch(_rematch_seeds)
+
+    # "Only import music in my Spotify": also TRIM the already-imported library down to the mode
+    # scope — otherwise the toggle would only filter future drops and never remove the non-Spotify
+    # music already placed. Scoped to source='manual-import' so it never touches picker acquisitions;
+    # out-of-scope files move to __autofill_pruned/ (recoverable). PREVIEW (dry_run) just counts.
+    if require_liked:
+        try:
+            from .autofill_engine import apply_mode_to_library
+            _pr = apply_mode_to_library(dry_run=dry_run, source="manual-import")
+            out["spotify_trim_files"] = _pr.get("files_pruned", 0)
+            out["spotify_trim_mode"] = _pr.get("target_mode")
+            if not dry_run and _pr.get("pruned_to_dir"):
+                out["spotify_trim_to"] = _pr["pruned_to_dir"]
+        except Exception:
+            log.exception("manual_import: spotify library-trim failed")
 
     if not dry_run:
         _SCAN_REMAINING[0] = None       # folder drained — resume folder-walk counting

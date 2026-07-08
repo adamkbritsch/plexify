@@ -69,6 +69,22 @@ def _pending_walk() -> None:
         _PENDING_REFRESHING[0] = False
 
 
+def _count_audio_fast() -> int:
+    """Count audio files by extension — NO per-file mtime stat, just dir listings, so it's cheap
+    over SMB even under load. Used to seed a scan's staging countdown (an active scan already
+    skips still-uploading files, so the in-flight check the full pending walk does is unneeded)."""
+    n = 0
+    root = _import_path()
+    try:
+        if os.path.isdir(root):
+            for dp, dns, fns in os.walk(root):
+                dns[:] = [d for d in dns if d != "_unnecessary"]
+                n += sum(1 for fn in fns if os.path.splitext(fn)[1].lower() in _AUDIO_EXTS)
+    except Exception:
+        log.exception("_count_audio_fast failed")
+    return n
+
+
 def pending_count(force: bool = False, wait: float = 3.0) -> int:
     """Settled (fully-uploaded, past the in-flight window) audio files in the import folder waiting
     to be organized — the 'staging' count for manual drops.
@@ -409,13 +425,13 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     moved_by_album: dict = {}                              # (artist, album) -> [placed file paths]
     placed_titles: set = set()                             # (artist, title) of every placed song → clears Unmatched
 
-    # Seed the live staging countdown from the last-known folder count (warm cache = instant); a
-    # cold cache gets one synchronous count. The placement loop decrements it per file, so the
-    # dashboard shows a smooth drain without re-walking the SMB folder under load.
+    # Seed the live staging countdown. Prefer the warm cache (the dashboard has been polling the
+    # count while the drop settled → instant, no I/O). Only if the cache is cold (e.g. right after
+    # an engine restart) fall back to a cheap extension-count. The placement loop decrements it per
+    # file, so the dashboard shows a smooth drain without re-walking the SMB folder under load.
     if not dry_run:
-        if _PENDING_CACHE[1] <= 0:
-            _pending_walk()
-        _SCAN_REMAINING[0] = _PENDING_CACHE[1]
+        _seed = _PENDING_CACHE[1] if _PENDING_CACHE[1] > 0 else _count_audio_fast()
+        _SCAN_REMAINING[0] = _seed
 
     def _inspect_flac(p):
         """(path, intact, tags) for one FLAC — the ffmpeg full-decode + tag read, the two

@@ -3660,41 +3660,64 @@ def api_playlists():
     return jsonify({"items": items, "source_name": src, "total": len(items)})
 
 
-@bp.route("/api/nas-downloader/status")
-def api_nas_downloader_status():
-    """Status of the autonomous NAS downloader daemon (:8788) — the 'dumb' half of the
-    split. Proxies the daemon's /healthz + /queue (via nas_downloader's Tailscale→LAN
-    fallback + bearer token) so the Mac dashboard can show the download pipeline. Short
-    timeouts + best-effort so a sleeping NAS never hangs the dashboard poll."""
-    from flask import jsonify, request
+_NAS_CACHE = {"reachable": True, "queued": 0, "running": 0, "ready": 0, "failed": 0,
+              "jobs": [], "ts": 0.0}   # daemon status, refreshed off the request path
+_NAS_REFRESHING = [False]
+_NAS_FAILS = [0]                        # consecutive healthz failures (smooths transient timeouts)
+
+
+def _refresh_nas_daemon_status():
+    """Background refresh of the daemon's /healthz + /queue. Runs OFF the request path so the
+    (Tailscale) daemon calls — which crawl when a big import saturates the WAN link — never hang
+    the dashboard poll. reachable only flips to False after 3 consecutive failures, so a single
+    timeout under import load doesn't flap the pill to 'unreachable' (found 2026-07-07)."""
+    import time as _t
     from . import nas_downloader as _nd
-    out = {"reachable": False, "queued": 0, "running": 0, "ready": 0, "failed": 0, "jobs": []}
-    # Manual-import drops waiting to be organized also count as 'staging'. The manual Refresh
-    # button passes ?fresh=1 to force a live recount (bounded so it never hangs over WAN);
-    # background polls use the cheap cached value.
-    _fresh = request.args.get("fresh") == "1"
-    try:
-        from . import import_folder
-        out["import_pending"] = import_folder.pending_count(force=_fresh)
-    except Exception:
-        out["import_pending"] = 0
     try:
         h = _nd._req("/healthz", timeout=3)
-        out["reachable"] = bool(h.get("ok", True))
+        _NAS_CACHE["reachable"] = bool(h.get("ok", True))
         for k in ("queued", "running", "ready", "failed"):
-            out[k] = int(h.get(k, 0) or 0)
-    except Exception as e:
-        out["error"] = str(e)[:120]
-        return jsonify(out)
-    # What it's downloading right now (best-effort; needs the token).
-    try:
-        q = _nd._req("/queue", timeout=4)
-        run = [j for j in (q.get("jobs") or []) if j.get("status") == "running"]
-        out["jobs"] = [{"artist": j.get("artist"), "album": j.get("album"),
-                        "title": j.get("title"), "source": j.get("source")}
-                       for j in run[:8]]
+            _NAS_CACHE[k] = int(h.get(k, 0) or 0)
+        _NAS_FAILS[0] = 0
+        try:
+            q = _nd._req("/queue", timeout=4)
+            run = [j for j in (q.get("jobs") or []) if j.get("status") == "running"]
+            _NAS_CACHE["jobs"] = [{"artist": j.get("artist"), "album": j.get("album"),
+                                   "title": j.get("title"), "source": j.get("source")}
+                                  for j in run[:8]]
+        except Exception:
+            pass
     except Exception:
-        pass
+        _NAS_FAILS[0] += 1
+        if _NAS_FAILS[0] >= 3:
+            _NAS_CACHE["reachable"] = False
+    finally:
+        _NAS_CACHE["ts"] = _t.time()
+        _NAS_REFRESHING[0] = False
+
+
+@bp.route("/api/nas-downloader/status")
+def api_nas_downloader_status():
+    """Status of the autonomous NAS downloader daemon (:8788). FULLY NON-BLOCKING: serves a
+    cached daemon status refreshed in the background + the staging count (a scan's live countdown,
+    else a cached folder walk). Never does a synchronous SMB/Tailscale call on the request path,
+    because while a big import saturates the WAN link ANY such call hangs the poll — which used to
+    time out the endpoint and draw the NAS pill as 'unreachable' even though the daemon was up."""
+    import time as _t, threading as _th
+    from flask import jsonify, request
+    _fresh = request.args.get("fresh") == "1"
+    # staging count — instant (scan countdown, or cached; force does a bounded recount)
+    try:
+        from . import import_folder
+        import_pending = import_folder.pending_count(force=_fresh)
+    except Exception:
+        import_pending = 0
+    # daemon status — serve cached, kick a background refresh when stale
+    if (_fresh or _t.time() - _NAS_CACHE["ts"] >= 4) and not _NAS_REFRESHING[0]:
+        _NAS_REFRESHING[0] = True
+        _th.Thread(target=_refresh_nas_daemon_status, daemon=True, name="nas-status").start()
+    out = {k: _NAS_CACHE[k] for k in ("reachable", "queued", "running", "ready", "failed", "jobs")}
+    out["import_pending"] = import_pending
     return jsonify(out)
 
 

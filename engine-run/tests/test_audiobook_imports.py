@@ -473,5 +473,47 @@ class TestReviewFindingFixes(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(dest, "b.pdf")))
             self.assertFalse(os.path.exists(book))
 
+
+
+class TestClobberFixes(unittest.TestCase):
+    """The 2026-07-10 live clobber: series-named album tags matched 3 books to one product,
+    and _tag_and_file overwrote the shared destination twice."""
+
+    def test_series_album_tag_overridden_by_structured_filename(self):
+        g = ab.infer_book_guess("Iron Gold by Pierce Brown Book 4.m4b",
+                                {"album": "Red Rising", "albumartist": "Pierce Brown"})
+        self.assertEqual((g["title"], g["author"]), ("Iron Gold", "Pierce Brown"))
+        # the tag reading survives as the fallback interpretation
+        self.assertIn({"title": "Red Rising", "author": "Pierce Brown"}, g.get("alts") or [])
+
+    def test_agreeing_tag_stays_primary(self):
+        g = ab.infer_book_guess("Red Rising by Pierce Brown Book 1.m4b",
+                                {"album": "Red Rising", "albumartist": "Pierce Brown"})
+        self.assertEqual(g["title"], "Red Rising")
+
+    def test_blob_filename_keeps_tag_priority(self):
+        g = ab.infer_book_guess("whatever rip 001.m4b",
+                                {"album": "The Martian", "albumartist": "Andy Weir"})
+        self.assertEqual(g["title"], "The Martian")
+
+    def test_tag_and_file_refuses_to_overwrite(self):
+        with tempfile.TemporaryDirectory() as d:
+            lib = os.path.join(d, "lib")
+            dest_dir = os.path.join(lib, "Pierce Brown", "Red Rising")
+            os.makedirs(dest_dir)
+            open(os.path.join(dest_dir, "Red Rising.m4b"), "w").write("EXISTING")
+            src = os.path.join(d, "incoming.m4b")
+            open(src, "w").write("NEWBOOK")
+            meta = {"asin": "B0", "title": "Red Rising", "authors": ["Pierce Brown"],
+                    "narrators": [], "release_date": "", "summary": "", "image": "",
+                    "genres": [], "series": "", "series_position": ""}
+            with mock.patch.object(ab, "apply_tags"),                  mock.patch.object(ab, "_fetch_cover", return_value=None):
+                with self.assertRaises(ab.DestConflictError):
+                    ab._tag_and_file(src, meta, lib)
+            # nothing was overwritten, the incoming file is untouched
+            self.assertEqual(open(os.path.join(dest_dir, "Red Rising.m4b")).read(), "EXISTING")
+            self.assertTrue(os.path.isfile(src))
+
+
 if __name__ == "__main__":
     unittest.main()

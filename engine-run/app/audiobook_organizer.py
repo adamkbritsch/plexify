@@ -47,6 +47,11 @@ _size_memo: dict = {}       # path -> size seen on the previous pass (settle det
 _fail_counts: dict = {}     # path -> consecutive tagging failures
 
 
+class DestConflictError(RuntimeError):
+    """The matched title's library path is already occupied by another file — filing would
+    overwrite it. The book goes to review instead (skip-not-guess applies to moves too)."""
+
+
 # ── inference ──────────────────────────────────────────────────────────────────────────────────
 
 _JUNK_RE = re.compile(
@@ -165,9 +170,30 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
             extra["part"], extra["part_total"] = alb_part, alb_total
         # tag values inherit the rip's naming schemes too — same normalization as filenames
         # (minus CamelCase splitting: a tag like 'SuperFreakonomics' is the real title)
-        return {"title": _clean_fragment(_normalize_name(alb_clean, camel=False)) or t_album,
-                "author": _clean_fragment(_normalize_name(t_artist, camel=False)) or None, **extra}
+        tag_guess = {"title": _clean_fragment(_normalize_name(alb_clean, camel=False)) or t_album,
+                     "author": _clean_fragment(_normalize_name(t_artist, camel=False)) or None,
+                     **extra}
+        # Series rips often stamp the SERIES as the album tag: 'Iron Gold by Pierce Brown
+        # Book 4.m4b' tagged album='Red Rising' matched (and got FILED AS) 'Red Rising',
+        # clobbering the real one — observed live 2026-07-10. When the filename parses into a
+        # STRUCTURED author+title reading (someone wrote real metadata into that name) and its
+        # title DISAGREES with the tag, the filename leads and the tag reading becomes the
+        # fallback interpretation. Bare-blob filenames keep the tag-first behavior.
+        fn_guess = _guess_from_name(departed, dict(extra))
+        fn_title = fn_guess.get("title") or ""
+        if fn_guess.get("author") and len(fn_title) >= 5:
+            from rapidfuzz.fuzz import token_set_ratio
+            if token_set_ratio(fn_title.lower(), (tag_guess["title"] or "").lower()) < 60:
+                fn_guess["alts"] = (fn_guess.get("alts") or []) + [
+                    {"title": tag_guess["title"], "author": tag_guess.get("author")}]
+                return fn_guess
+        return tag_guess
 
+    return _guess_from_name(departed, extra)
+
+
+def _guess_from_name(departed: str, extra: dict) -> dict:
+    """The filename-pattern half of infer_book_guess (tag-free)."""
     base = _normalize_name(departed)
     # 'Title by First Last Book N' — series rips name whole sets this way
     m_by = _BY_AUTHOR_RE.match(base)
@@ -644,16 +670,27 @@ def _park_for_review(path: str, review_dir: str, guess: dict,
 
 
 def _tag_and_file(path: str, meta: dict, library_dir: str) -> str:
-    """Tag in place (local volume), then same-volume rename into the library. Returns dest."""
+    """Tag in place (local volume), then publish into the library. Returns dest.
+
+    The untagged tree and the library are SEPARATE bind mounts in the daemon container, so the
+    final move is a multi-GB copy, not a rename — and the engine's tick-triggered Plex scan can
+    fire while it runs. _move_publish makes the file appear atomically (hidden temp + rename),
+    otherwise Plex indexes the half-copied, tagless file as '[Unknown Artist]/[Unknown Album]'
+    (observed live with the 1.3GB Count of Monte Cristo)."""
     size = os.path.getsize(path)
     free = shutil.disk_usage(os.path.dirname(path)).free
     if free < 2 * size:
         raise RuntimeError(f"insufficient free space to retag ({free} < 2x{size})")
+    dest = dest_for(meta, library_dir)
+    if os.path.exists(dest):
+        # A file already lives at this title's path — two books matched one product
+        # (series-tagged rips, two narrations of one title). Overwriting is silent data loss
+        # (destroyed Iron Gold + Dark Age + a Martian narration on 2026-07-10); the caller
+        # parks the newcomer for human review instead.
+        raise DestConflictError(f"library already has {os.path.basename(dest)}")
     cover = _fetch_cover(meta.get("image") or "")
     apply_tags(path, meta, cover)
-    dest = dest_for(meta, library_dir)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    shutil.move(path, dest)
+    _move_publish(path, dest)
     try:
         os.chmod(dest, 0o644)
     except OSError:
@@ -713,6 +750,11 @@ def organize_pass(temp_dir: str, library_dir: str,
                            "score": score, "dest": dest})
                 out["organized"] += 1
                 _fail_counts.pop(path, None)
+            except DestConflictError as e:
+                _park_for_review(path, review_dir, guess, candidates, score,
+                                 f"dest_conflict: {str(e)[:100]}")
+                _cleanup_book_dir(container_dir)
+                out["review"] += 1
             except Exception as e:
                 out["errors"] += 1
                 log.exception("organize failed for %s", fn)

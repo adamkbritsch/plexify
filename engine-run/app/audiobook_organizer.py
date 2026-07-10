@@ -515,6 +515,32 @@ def apply_tags(m4b_path: str, meta: dict, cover_bytes: Optional[bytes] = None) -
     f.save()
 
 
+def itunes_cover_search(title: str, author: Optional[str] = None, session=None) -> Optional[str]:
+    """Cover-art fallback for books Audible can't find — shorts that only exist inside
+    collections ('Governor Wiggin' ships in 'Ender's Tribe'), regional catalog gaps. Returns
+    the best artwork URL or None. The artist must resemble the author so a title-word
+    collision can't attach someone else's cover."""
+    import requests as _rq
+    from rapidfuzz.fuzz import token_set_ratio
+    session = session or _rq
+    try:
+        r = session.get("https://itunes.apple.com/search",
+                        params={"term": f"{title} {author or ''}".strip(),
+                                "media": "audiobook", "limit": 5},
+                        timeout=15, headers={"User-Agent": "Plexify-Audiobooks/1.0"})
+        for item in (r.json().get("results") or []):
+            art = item.get("artworkUrl100") or item.get("artworkUrl60") or ""
+            artist = (item.get("artistName") or "").lower()
+            if not art:
+                continue
+            if author and token_set_ratio(author.lower(), artist) < 60:
+                continue
+            return art.replace("100x100", "600x600").replace("60x60", "600x600")
+    except Exception:
+        log.warning("itunes cover search failed", exc_info=True)
+    return None
+
+
 def _fetch_cover(url: str, session=None) -> Optional[bytes]:
     if not url:
         return None
@@ -807,6 +833,8 @@ def resolve_book(file_name: str, review_dir: str, library_dir: str,
                     meta["genres"] = rich.get("genres") or meta["genres"]
                     meta["narrators"] = rich.get("narrators") or []
                     log.info("manual resolve enriched from %s (score %s)", best["asin"], score)
+            if not meta["image"]:
+                meta["image"] = itunes_cover_search(title.strip(), author.strip()) or ""
         else:
             return {"ok": False, "error": "need asin, or author + title"}
         _apply_part_info(meta, infer_book_guess(safe_name))

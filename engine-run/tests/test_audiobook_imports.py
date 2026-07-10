@@ -560,5 +560,28 @@ class TestManualResolveEnrichment(unittest.TestCase):
             self.assertTrue(res["ok"], res)
 
 
+
+
+class TestItunesCoverFallback(unittest.TestCase):
+    def _session(self, results):
+        s = mock.Mock()
+        s.get.return_value.json.return_value = {"results": results}
+        return s
+
+    def test_author_gate_rejects_title_word_collisions(self):
+        # 'Renegat' also matches a Harlan Ellison title on iTunes — wrong author, no cover
+        s = self._session([
+            {"artistName": "Harlan Ellison & Richard Gilliland",
+             "artworkUrl100": "http://x/harlan.100x100.jpg"},
+            {"artistName": "Orson Scott Card",
+             "artworkUrl100": "http://x/osc.100x100.jpg"},
+        ])
+        url = ab.itunes_cover_search("Renegat", "Orson Scott Card", session=s)
+        self.assertEqual(url, "http://x/osc.600x600.jpg")
+
+    def test_no_results_returns_none(self):
+        self.assertIsNone(ab.itunes_cover_search("Nope", "Nobody", session=self._session([])))
+
+
 if __name__ == "__main__":
     unittest.main()

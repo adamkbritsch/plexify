@@ -3404,7 +3404,9 @@ def api_settings():
                 set_config("spotiflac_qobuz_token", _qv)
         # Plain text / url / number config.
         for _tk in ("plex_library_path", "slskd_url", "anthropic_model", "telegram_api_id",
-                    "manual_import_path"):
+                    "manual_import_path",
+                    "audiobook_drop_path", "audiobook_library_path",
+                    "plex_audiobook_section_key", "audiobook_min_confidence"):
             if _tk in data:
                 set_config(_tk, str(data.get(_tk) or "").strip())
         # Boolean toggles.
@@ -3413,9 +3415,16 @@ def api_settings():
                     "autofill_allow_mp3_fallback", "autofill_allow_cd_quality",
                     "manual_import_enabled", "manual_import_delete_unnecessary",
                     "manual_import_dry_run", "manual_import_require_liked",
-                    "manual_import_songs_only"):
+                    "manual_import_songs_only", "audiobook_enabled"):
             if _bk in data:
                 set_config(_bk, "1" if data.get(_bk) else "0")
+        # Audiobook settings also live in the daemon's own config DB — forward on change.
+        if any(k in data for k in ("audiobook_enabled", "audiobook_min_confidence")):
+            try:
+                from . import audiobook_client
+                audiobook_client.push_config()
+            except Exception:
+                log.exception("audiobook config push failed (settings saved locally)")
         if "autofill_acquisition_mode" in data:
             _m = str(data.get("autofill_acquisition_mode") or "album")
             if _m in ("song", "album", "discography"):
@@ -3534,6 +3543,15 @@ def api_settings():
         "manual_import_dry_run": _b("manual_import_dry_run"),
         "manual_import_require_liked": _b("manual_import_require_liked"),
         "manual_import_songs_only": _b("manual_import_songs_only"),
+        # Audiobooks
+        "audiobook_enabled": _b("audiobook_enabled"),
+        "audiobook_drop_path": get_config(
+            "audiobook_drop_path",
+            "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded") or "",
+        "audiobook_library_path": get_config(
+            "audiobook_library_path", "/Volumes/MediaVolume3/Audiobooks") or "",
+        "plex_audiobook_section_key": get_config("plex_audiobook_section_key", "") or "",
+        "audiobook_min_confidence": get_config("audiobook_min_confidence", "80") or "80",
     })
 
 
@@ -3725,6 +3743,99 @@ def api_nas_downloader_status():
     out = {k: _NAS_CACHE[k] for k in ("reachable", "queued", "running", "ready", "failed", "jobs")}
     out["import_pending"] = import_pending
     return jsonify(out)
+
+
+# ── audiobooks ────────────────────────────────────────────────────────────────
+_AB_CACHE = {"reachable": False, "enabled": False, "dirs_ok": False, "dropped": 0,
+             "converting": 0, "untagged": 0, "review": 0, "organized_total": 0,
+             "recent": [], "library_visible": False, "ts": 0.0}
+_AB_REFRESHING = [False]
+
+
+def _refresh_audiobook_status():
+    """Background refresh of the daemon-side organizer status. ALSO runs audiobook_tick (config
+    push + Plex-scan-on-new-books) — trigger-on-poll, so the feature works on deployments where
+    the engine scheduler is off (the dashboard/page poll IS the tick)."""
+    import time as _t
+    try:
+        from . import audiobook_client
+        audiobook_client.audiobook_tick()
+        st = audiobook_client.daemon_status()
+        for k in ("reachable", "enabled", "dirs_ok", "dropped", "converting", "untagged",
+                  "review", "organized_total", "recent", "library_visible"):
+            if k in st:
+                _AB_CACHE[k] = st[k]
+        if not st.get("reachable"):
+            _AB_CACHE["reachable"] = False
+    except Exception:
+        log.exception("audiobook status refresh failed")
+    finally:
+        _AB_CACHE["ts"] = _t.time()
+        _AB_REFRESHING[0] = False
+
+
+@bp.route("/api/audiobooks/status")
+def api_audiobooks_status():
+    """Organizer pipeline status for the Audiobooks page. Non-blocking: cached, refreshed off
+    the request path (the refresh also runs the engine-side tick — see above)."""
+    import time as _t, threading as _th
+    from flask import jsonify
+    if _t.time() - _AB_CACHE["ts"] >= 4 and not _AB_REFRESHING[0]:
+        _AB_REFRESHING[0] = True
+        _th.Thread(target=_refresh_audiobook_status, daemon=True, name="ab-status").start()
+    out = {k: v for k, v in _AB_CACHE.items() if k != "ts"}
+    out["feature_enabled"] = (get_config("audiobook_enabled", "0") or "0") == "1"
+    return jsonify(out)
+
+
+@bp.route("/api/audiobooks/organize-now", methods=["POST"])
+def api_audiobooks_organize_now():
+    from flask import jsonify
+    from . import audiobook_client
+    audiobook_client.push_config()
+    return jsonify(audiobook_client.organize_now())
+
+
+@bp.route("/api/audiobooks/resolve", methods=["POST"])
+def api_audiobooks_resolve():
+    from flask import jsonify, request
+    from . import audiobook_client
+    data = request.get_json(force=True, silent=True) or {}
+    res = audiobook_client.resolve(str(data.get("file") or ""),
+                                   asin=data.get("asin") or None,
+                                   author=data.get("author") or None,
+                                   title=data.get("title") or None)
+    if res.get("ok"):
+        # a resolve files a book directly — make Plex pick it up right away
+        try:
+            from . import plex_client
+            plex_client.trigger_audiobook_scan()
+        except Exception:
+            pass
+    return jsonify(res)
+
+
+@bp.route("/api/plex/audiobook-sections")
+def api_plex_audiobook_sections():
+    from flask import jsonify
+    from . import plex_client
+    try:
+        return jsonify({"sections": plex_client.list_audiobook_sections(),
+                        "selected": get_config("plex_audiobook_section_key", "") or ""})
+    except Exception as e:
+        return jsonify({"sections": [], "error": str(e)[:200]})
+
+
+@bp.route("/api/audiobooks/create-plex-section", methods=["POST"])
+def api_audiobooks_create_plex_section():
+    from flask import jsonify, request
+    from . import plex_client
+    data = request.get_json(force=True, silent=True) or {}
+    location = str(data.get("location") or "/media/vol3/Audiobooks")
+    res = plex_client.create_audiobook_section(location)
+    if res.get("ok") and res.get("key"):
+        set_config("plex_audiobook_section_key", str(res["key"]))
+    return jsonify(res)
 
 
 @bp.route("/api/attest", methods=["POST"])

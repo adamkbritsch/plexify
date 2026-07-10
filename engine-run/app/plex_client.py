@@ -127,6 +127,74 @@ def list_music_sections() -> list[dict]:
     return out
 
 
+# ── audiobooks ────────────────────────────────────────────────────────────────
+# The Audiobooks library is ALSO type "artist" (a Plex Music library with the Audnexus agent) —
+# so unlike _music_section there is deliberately NO type-based fallback here: with two artist
+# sections in the server a guess could point audiobook automation at the music library.
+
+def _audiobook_section(plex: PlexServer):
+    section_key = get_config("plex_audiobook_section_key")
+    if not section_key:
+        return None
+    try:
+        return plex.library.sectionByID(int(section_key))
+    except Exception as e:
+        log.exception("Plex audiobook section lookup failed: %s", e)
+    return None
+
+
+def list_audiobook_sections() -> list[dict]:
+    """All artist-type sections — the settings picker chooses which one is Audiobooks."""
+    return list_music_sections()
+
+
+def trigger_audiobook_scan() -> bool:
+    plex = _connect()
+    sec = _audiobook_section(plex) if plex else None
+    if not sec:
+        return False
+    try:
+        sec.update()
+        return True
+    except Exception:
+        log.exception("audiobook section scan trigger failed")
+        return False
+
+
+def create_audiobook_section(location: str, name: str = "Audiobooks") -> dict:
+    """Create the Audiobooks library (Music type + Audnexus agent + Plex Music Scanner).
+    Requires the Audnexus.bundle agent to already be installed and Plex restarted — otherwise
+    Plex rejects the unknown agent. Returns {ok, key} or {ok: False, error}."""
+    plex = _connect()
+    if not plex:
+        return {"ok": False, "error": "Plex not connected (check plex_url / plex_token)"}
+    try:
+        existing = {s.title.lower() for s in plex.library.sections()}
+        if name.lower() in existing:
+            sec = next(s for s in plex.library.sections() if s.title.lower() == name.lower())
+            return {"ok": True, "key": str(sec.key), "existed": True}
+        plex.library.add(name=name, type="artist",
+                         agent="com.plexapp.agents.audnexus",
+                         scanner="Plex Music Scanner",
+                         language="en", location=location)
+        # library.add returns None on some plexapi versions — re-find the section
+        plex.library.reload()
+        sec = next((s for s in plex.library.sections()
+                    if s.title.lower() == name.lower()), None)
+        if not sec:
+            return {"ok": False, "error": "created but section not found on reload"}
+        try:
+            # Best-effort advanced prefs; agent ORDER and some prefs are UI-only (documented
+            # manual checklist in docs/AUDIOBOOKS.md).
+            sec.editAdvanced(respectTags=0)
+        except Exception:
+            pass
+        return {"ok": True, "key": str(sec.key)}
+    except Exception as e:
+        log.exception("create_audiobook_section failed")
+        return {"ok": False, "error": str(e)[:300]}
+
+
 def _is_lossless(track) -> tuple[bool, str, Optional[int]]:
     """Inspect a plexapi Track for any FLAC/ALAC media variant.
 

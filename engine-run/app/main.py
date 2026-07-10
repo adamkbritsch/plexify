@@ -304,6 +304,15 @@ scheduler.add_job(
     id="manual_import_scan", max_instances=1, coalesce=True, misfire_grace_time=60,
 )
 
+# AUDIOBOOKS (feature-flagged, default off): push settings to the daemon-side organizer and
+# trigger a Plex audiobook-section scan when new books were organized. Scheduler-off deployments
+# get the same behavior via trigger-on-poll in /api/audiobooks/status.
+from .audiobook_client import audiobook_tick
+scheduler.add_job(
+    audiobook_tick, "interval", minutes=2,
+    id="audiobook_organize", max_instances=1, coalesce=True, misfire_grace_time=60,
+)
+
 # PLAYLIST RECOMPILER: nightly reorder of every Plex playlist into Spotify source order
 # (decoupled, from the local cache). Intensive → runs once a night at 4am.
 scheduler.add_job(

@@ -582,11 +582,22 @@ def _log_ab_move(kind: str, src: str, dst: str) -> None:
 
 
 def book_records(limit: int = 30) -> list:
-    """Most-recent-first tail of the books ledger (the UI's recent list + review queue)."""
+    """Most-recent-first tail of the books ledger (the UI's recent list + review queue).
+    An 'organized' record whose library file has since VANISHED (deleted, moved) is dropped
+    from the feed — showing it says the book is in the library when it isn't (Sunrise on the
+    Reaping kept appearing after its file was destroyed). The ledger line itself stays."""
     try:
         with open(_ledger_path(BOOKS_LEDGER), encoding="utf-8") as fh:
             lines = fh.readlines()[-max(1, limit * 3):]
-        out = [json.loads(l) for l in lines if l.strip()]
+        out = []
+        for l in lines:
+            if not l.strip():
+                continue
+            rec = json.loads(l)
+            dest = rec.get("dest")
+            if rec.get("status") == "organized" and dest and not os.path.exists(dest):
+                continue
+            out.append(rec)
         return list(reversed(out))[:limit]
     except FileNotFoundError:
         return []

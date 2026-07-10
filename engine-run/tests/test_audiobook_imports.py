@@ -621,5 +621,25 @@ class TestReviewItems(unittest.TestCase):
                 self.assertEqual(ab.review_items(review), [])
 
 
+
+
+class TestBookRecordsTruthfulness(unittest.TestCase):
+    def test_organized_record_with_missing_file_hidden(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "Real.m4b"); open(real, "w").write("x")
+            with mock.patch.object(ab, "DATA_DIR", d):
+                with open(os.path.join(d, ab.BOOKS_LEDGER), "w") as fh:
+                    fh.write(json.dumps({"status": "organized", "file": "Gone.m4b",
+                                         "dest": os.path.join(d, "nope.m4b")}) + "\n")
+                    fh.write(json.dumps({"status": "organized", "file": "Real.m4b",
+                                         "dest": real}) + "\n")
+                    fh.write(json.dumps({"status": "review", "file": "Parked.m4b"}) + "\n")
+                recs = ab.book_records(30)
+            files = [r["file"] for r in recs]
+            self.assertNotIn("Gone.m4b", files)     # vanished from disk -> vanished from feed
+            self.assertIn("Real.m4b", files)
+            self.assertIn("Parked.m4b", files)      # review records unaffected
+
+
 if __name__ == "__main__":
     unittest.main()

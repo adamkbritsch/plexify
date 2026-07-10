@@ -2,12 +2,13 @@ import SwiftUI
 import AppKit
 
 enum Page: String, CaseIterable, Identifiable {
-    case dashboard = "Dashboard"
-    case playlists = "Playlists"
-    case library   = "Library"
-    case settings  = "Settings"
-    case jobs      = "Jobs"
-    case unmatched = "Unmatched"
+    case dashboard  = "Dashboard"
+    case playlists  = "Playlists"
+    case library    = "Library"
+    case audiobooks = "Audiobooks"
+    case settings   = "Settings"
+    case jobs       = "Jobs"
+    case unmatched  = "Unmatched"
     var id: String { rawValue }
     var primary: Bool { self != .unmatched }   // Unmatched is de-emphasized in the web nav
 }
@@ -100,12 +101,13 @@ struct PlexifyRootView: View {
                         ScrollView {
                             Group {
                                 switch page {
-                                case .dashboard: DashboardView()
-                                case .playlists: PlaylistsView()
-                                case .library:   LibraryView()
-                                case .settings:  SettingsView()
-                                case .jobs:      JobsView()
-                                case .unmatched: UnmatchedView()
+                                case .dashboard:  DashboardView()
+                                case .playlists:  PlaylistsView()
+                                case .library:    LibraryView()
+                                case .audiobooks: AudiobooksView()
+                                case .settings:   SettingsView()
+                                case .jobs:       JobsView()
+                                case .unmatched:  UnmatchedView()
                                 }
                             }
                             .padding(24)
@@ -131,12 +133,13 @@ struct PlexifyRootView: View {
     // Load a page's data when it becomes visible.
     func onEnter(_ p: Page) async {
         switch p {
-        case .dashboard: await store.refreshAll()
-        case .library:   if store.albums.isEmpty { await store.loadAlbums() }
-        case .jobs:      await store.loadJobs()
-        case .playlists: await store.loadPlaylists()
-        case .settings:  await store.loadSettings()
-        case .unmatched: await store.loadUnmatched()
+        case .dashboard:  await store.refreshAll()
+        case .library:    if store.albums.isEmpty { await store.loadAlbums() }
+        case .audiobooks: await store.loadAudiobooks()
+        case .jobs:       await store.loadJobs()
+        case .playlists:  await store.loadPlaylists()
+        case .settings:   await store.loadSettings()
+        case .unmatched:  await store.loadUnmatched()
         }
     }
 }

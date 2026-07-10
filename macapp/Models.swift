@@ -351,6 +351,57 @@ struct SettingsDTO: Codable {
     var manual_import_dry_run: Bool?
     var manual_import_require_liked: Bool?
     var manual_import_songs_only: Bool?
+    // Audiobooks
+    var audiobook_enabled: Bool?
+    var audiobook_drop_path: String?
+    var audiobook_library_path: String?
+    var plex_audiobook_section_key: String?
+    var audiobook_min_confidence: String?
+}
+
+// MARK: - Audiobooks (/api/audiobooks/*)
+
+struct AudiobookCandidateDTO: Codable, Hashable {
+    var asin: String?
+    var title: String?
+    var authors: [String]?
+}
+
+struct AudiobookDTO: Codable, Identifiable, Hashable {
+    var ts: String?
+    var status: String?          // organized | review
+    var file: String?
+    var title: String?
+    var author: String?
+    var asin: String?
+    var cover_url: String?
+    var score: Int?
+    var dest: String?
+    var reason: String?
+    var guess: [String: String]?
+    var candidates: [AudiobookCandidateDTO]?
+    var id: String { "\(ts ?? "")-\(file ?? title ?? "")" }
+}
+
+struct AudiobooksStatusDTO: Codable {
+    var reachable: Bool?
+    var enabled: Bool?           // daemon-side flag
+    var feature_enabled: Bool?   // engine-side flag (the settings toggle)
+    var dirs_ok: Bool?
+    var dropped: Int?
+    var converting: Int?
+    var untagged: Int?
+    var review: Int?
+    var organized_total: Int?
+    var recent: [AudiobookDTO]?
+    var library_visible: Bool?
+    var error: String?
+}
+
+struct PlexSectionDTO: Codable, Identifiable, Hashable {
+    var key: String?
+    var title: String?
+    var id: String { key ?? title ?? "" }
 }
 
 // MARK: - Unmatched (/api/unmatched — new endpoint)

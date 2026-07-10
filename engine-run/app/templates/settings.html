@@ -700,6 +700,62 @@
 })();
 </script>
 
+{# ════════ Audiobooks ════════ #}
+<div class="page-head" style="margin-top:2.6em; border-top:1px solid rgba(255,255,255,0.08); padding-top:1.6em">
+  <h2 style="font-size:19px; margin:0 0 4px">Audiobooks</h2>
+  <p class="muted small" style="margin:0">Drop an audiobook (a folder of mp3s or a single file) into the drop folder — auto-m4b merges it into one chapterized m4b, then Plexify matches it against Audible, tags it (cover, narrator, description), and files it into your Plex audiobook library. Low-confidence matches wait for review; nothing is ever guessed.</p>
+</div>
+<section class="card" id="audiobooks-card">
+  <h2>Audiobooks <span class="smart-badge">{% if get_config('audiobook_enabled','0') == '1' %}ON{% else %}OFF{% endif %}</span></h2>
+  <label class="row gap toggle-row">
+    <input type="checkbox" id="ab-enabled" {% if get_config('audiobook_enabled','0')=='1' %}checked{% endif %}>
+    <span>Enable audiobooks <small class="muted">— the organizer runs on the NAS every minute while enabled</small></span>
+  </label>
+  <label class="field">
+    <span class="field-label">Drop folder <small class="muted">— where you drop new audiobooks (on the NAS share)</small></span>
+    <input type="text" id="ab-drop" autocomplete="off"
+           value="{{ get_config('audiobook_drop_path','/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded') }}"
+           placeholder="/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded">
+  </label>
+  <label class="field">
+    <span class="field-label">Library folder <small class="muted">— the folder your Plex audiobook library indexes</small></span>
+    <input type="text" id="ab-lib" autocomplete="off"
+           value="{{ get_config('audiobook_library_path','/Volumes/MediaVolume3/Audiobooks') }}"
+           placeholder="/Volumes/MediaVolume3/Audiobooks">
+  </label>
+  <label class="field">
+    <span class="field-label">Plex section key <small class="muted">— the Audiobooks library's id (created with the Audnexus agent)</small></span>
+    <input type="text" id="ab-section" autocomplete="off" style="max-width:120px"
+           value="{{ get_config('plex_audiobook_section_key','') }}" placeholder="e.g. 12">
+  </label>
+  <label class="field">
+    <span class="field-label">Match confidence <small class="muted">— below this, books wait for review instead of guessing (50–100)</small></span>
+    <input type="number" id="ab-conf" min="50" max="100" step="5" style="max-width:90px"
+           value="{{ get_config('audiobook_min_confidence','80') }}">
+  </label>
+  <div class="row gap" style="margin-top:10px">
+    <button type="button" class="btn" id="ab-save">Save</button>
+    <button type="button" class="btn primary" id="ab-organize">Organize now</button>
+    <span class="muted small" id="ab-status"></span>
+  </div>
+</section>
+<script>
+(function(){
+  const $=id=>document.getElementById(id), st=$('ab-status');
+  function cfg(){return{audiobook_enabled:$('ab-enabled').checked,audiobook_drop_path:$('ab-drop').value,
+    audiobook_library_path:$('ab-lib').value,plex_audiobook_section_key:$('ab-section').value,
+    audiobook_min_confidence:$('ab-conf').value};}
+  async function save(){await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg())});}
+  $('ab-save').addEventListener('click',async()=>{st.textContent='saving…';await save();st.textContent='saved';});
+  $('ab-organize').addEventListener('click',async()=>{
+    st.textContent='saving…'; await save(); st.textContent='starting…';
+    let r; try{ r=await (await fetch('/api/audiobooks/organize-now',{method:'POST',headers:{'X-Requested-With':'fetch'}})).json(); }
+    catch(e){ st.textContent='failed'; return; }
+    st.textContent=r.ok?(r.started?'organize pass started':'a pass is already running'):(r.error||'failed');
+  });
+})();
+</script>
+
 {# ════════ System & storage ════════ #}
 <div class="page-head" style="margin-top:2.6em; border-top:1px solid rgba(255,255,255,0.08); padding-top:1.6em">
   <h2 style="font-size:19px; margin:0 0 4px">System &amp; storage</h2>

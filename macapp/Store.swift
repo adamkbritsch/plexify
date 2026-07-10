@@ -221,6 +221,39 @@ final class PlexifyStore: ObservableObject {
     }
     func loadJobDetail(_ id: Int) async { jobDetail = await get("/api/jobs/\(id)") }
 
+    // MARK: - audiobooks
+
+    @Published var audiobooks: AudiobooksStatusDTO?
+    @Published var audiobookSections: [PlexSectionDTO] = []
+
+    func loadAudiobooks() async {
+        if let d: AudiobooksStatusDTO = await get("/api/audiobooks/status") { audiobooks = d }
+    }
+    func organizeAudiobooksNow() async {
+        _ = await postAction("/api/audiobooks/organize-now")
+        lastAction = "Audiobook organize started"
+        await loadAudiobooks()
+    }
+    func resolveAudiobook(file: String, asin: String? = nil,
+                          author: String? = nil, title: String? = nil) async -> Bool {
+        var body: [String: Any] = ["file": file]
+        if let asin { body["asin"] = asin }
+        if let author { body["author"] = author }
+        if let title { body["title"] = title }
+        let ok = await postJSON("/api/audiobooks/resolve", body)
+        await loadAudiobooks()
+        return ok
+    }
+    func loadAudiobookSections() async {
+        struct R: Codable { var sections: [PlexSectionDTO]? }
+        if let d: R = await get("/api/plex/audiobook-sections") { audiobookSections = d.sections ?? [] }
+    }
+    func createAudiobookSection() async -> [String: Any] {
+        let res = await postAction("/api/audiobooks/create-plex-section", timeout: 40)
+        await loadAudiobookSections(); await loadSettings()
+        return res
+    }
+
     // MARK: - playlists
 
     func loadPlaylists() async {

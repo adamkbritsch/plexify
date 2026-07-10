@@ -55,6 +55,14 @@ struct SettingsView: View {
     @State private var importSongsOnly = false
     @State private var importStatus = ""
     @State private var importScanning = false
+    // Audiobooks
+    @State private var abEnabled = false
+    @State private var abDropPath = "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded"
+    @State private var abLibraryPath = "/Volumes/MediaVolume3/Audiobooks"
+    @State private var abSectionKey = ""
+    @State private var abMinConfidence = 80
+    @State private var abCreating = false
+    @State private var abStatus = ""
 
     private var unlocked: Bool { selfRepairBypass || (store.settings?.self_repair_full ?? false) }
 
@@ -76,6 +84,7 @@ struct SettingsView: View {
                 selfRepairCard
                 downloadingCard
                 musicImportCard
+                audiobooksCard
                 plexStarsCard
                 appearanceCard
                 storagePathsCard
@@ -289,6 +298,72 @@ struct SettingsView: View {
         }
     }
 
+    private var audiobooksCard: some View {
+        Section2(title: "Audiobooks", badge: abEnabled ? "ON" : "OFF",
+                 help: "Drop an audiobook (folder of mp3s or a single file) into the drop folder. auto-m4b merges it into one chapterized m4b, then Plexify matches it against Audible, tags it (cover, narrator, description), and files it into your Plex audiobook library. Low-confidence matches wait in the Audiobooks page's review queue — nothing is ever guessed.") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $abEnabled) {
+                    label2("Enable audiobooks", "the organizer runs on the NAS every minute while enabled")
+                }.toggleStyle(.switch).tint(PX.plex)
+                FieldLabel("Drop folder", help: "where you drop new audiobooks (on the NAS share)")
+                pxTF($abDropPath, "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded")
+                FieldLabel("Library folder", help: "the folder your Plex audiobook library indexes")
+                pxTF($abLibraryPath, "/Volumes/MediaVolume3/Audiobooks")
+                FieldLabel("Plex library", help: "which Plex section is Audiobooks (created with the Audnexus agent)")
+                HStack(spacing: 10) {
+                    Menu {
+                        ForEach(store.audiobookSections) { s in
+                            Button("\(s.title ?? "?") (id \(s.key ?? "?"))") { abSectionKey = s.key ?? "" }
+                        }
+                        Button("Refresh list") { Task { await store.loadAudiobookSections() } }
+                    } label: {
+                        Text(abSectionLabel).font(.system(size: 12)).foregroundStyle(PX.text)
+                    }
+                    .menuStyle(.borderlessButton).frame(maxWidth: 320)
+                    Button { createSection() } label: { Text(abCreating ? "Creating…" : "Create Plex library") }
+                        .buttonStyle(GhostButtonStyle(small: true)).disabled(abCreating)
+                }
+                HStack(spacing: 10) {
+                    FieldLabel("Match confidence", help: "below this, books wait for review instead of guessing")
+                    Stepper(value: $abMinConfidence, in: 50...100, step: 5) {
+                        Text(verbatim: "\(abMinConfidence)").font(.system(size: 12)).foregroundStyle(PX.text)
+                    }.frame(maxWidth: 140)
+                    Spacer()
+                    Button { Task { await store.organizeAudiobooksNow() } } label: { Text("Organize now") }
+                        .buttonStyle(GhostButtonStyle(small: true)).disabled(!abEnabled)
+                }
+                if !abStatus.isEmpty {
+                    Text(abStatus).font(.system(size: 12)).foregroundStyle(PX.text2).lineLimit(2)
+                }
+            }
+        }
+        .task { if store.audiobookSections.isEmpty { await store.loadAudiobookSections() } }
+    }
+
+    private var abSectionLabel: String {
+        if let s = store.audiobookSections.first(where: { $0.key == abSectionKey }) {
+            return "\(s.title ?? "?") (id \(abSectionKey))"
+        }
+        return abSectionKey.isEmpty ? "Select a Plex section…" : "Section id \(abSectionKey)"
+    }
+
+    private func createSection() {
+        abCreating = true
+        abStatus = "creating Plex library…"
+        Task {
+            let res = await store.createAudiobookSection()
+            if let key = res["key"] as? String {
+                abSectionKey = key
+                abStatus = (res["existed"] as? Bool == true)
+                    ? "library already existed — selected (id \(key))"
+                    : "library created (id \(key)) — set the agent order + album settings in Plex once (see docs/AUDIOBOOKS.md)"
+            } else {
+                abStatus = (res["error"] as? String) ?? "create failed — is the Audnexus agent installed and Plex restarted?"
+            }
+            abCreating = false
+        }
+    }
+
     private func runImport(dry: Bool) {
         importScanning = true
         importStatus = dry ? "previewing…" : "scanning…"
@@ -445,6 +520,12 @@ struct SettingsView: View {
         importDelete = s.manual_import_delete_unnecessary ?? false
         importRequireLiked = s.manual_import_require_liked ?? false
         importSongsOnly = s.manual_import_songs_only ?? false
+        abEnabled = s.audiobook_enabled ?? false
+        abDropPath = s.audiobook_drop_path
+            ?? "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded"
+        abLibraryPath = s.audiobook_library_path ?? "/Volumes/MediaVolume3/Audiobooks"
+        abSectionKey = s.plex_audiobook_section_key ?? ""
+        abMinConfidence = Int(s.audiobook_min_confidence ?? "80") ?? 80
         loaded = true
     }
 
@@ -474,6 +555,11 @@ struct SettingsView: View {
             "manual_import_delete_unnecessary": importDelete,
             "manual_import_require_liked": importRequireLiked,
             "manual_import_songs_only": importSongsOnly,
+            "audiobook_enabled": abEnabled,
+            "audiobook_drop_path": abDropPath,
+            "audiobook_library_path": abLibraryPath,
+            "plex_audiobook_section_key": abSectionKey,
+            "audiobook_min_confidence": String(abMinConfidence),
         ]
         // gated fields — only send when unlocked (server also enforces this)
         if unlocked {

@@ -49,7 +49,7 @@ struct SettingsView: View {
     @State private var autostarDryRun = false
     // Music import
     @State private var importEnabled = false
-    @State private var importPath = "/Volumes/MediaVolume3/Downloads/music/import"
+    @State private var importPath = "/Volumes/MediaVolume3/plexify-imports"
     @State private var importDelete = false
     @State private var importRequireLiked = false
     @State private var importSongsOnly = false
@@ -57,7 +57,7 @@ struct SettingsView: View {
     @State private var importScanning = false
     // Audiobooks
     @State private var abEnabled = false
-    @State private var abDropPath = "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded"
+    @State private var abDropPath = "/Volumes/MediaVolume3/plexify-imports"
     @State private var abLibraryPath = "/Volumes/MediaVolume3/Audiobooks"
     @State private var abSectionKey = ""
     @State private var abMinConfidence = 80
@@ -274,8 +274,8 @@ struct SettingsView: View {
                 Toggle(isOn: $importEnabled) {
                     label2("Enable music import", "auto-scans the import folder every couple of minutes")
                 }.toggleStyle(.switch).tint(PX.plex)
-                FieldLabel("Import folder", help: "where you drop files (on the NAS share)")
-                pxTF($importPath, "/Volumes/MediaVolume3/Downloads/music/import")
+                FieldLabel("Import folder", help: "the shared plexify-imports drop (audiobooks are auto-routed to their own pipeline)")
+                pxTF($importPath, "/Volumes/MediaVolume3/plexify-imports")
                 Toggle(isOn: $importDelete) {
                     label2("Delete unnecessary music", "permanently delete junk / lossy / duplicates instead of quarantining them to _unnecessary/. Off = recoverable.")
                 }.toggleStyle(.switch).tint(importDelete ? PX.danger : PX.plex)
@@ -305,8 +305,8 @@ struct SettingsView: View {
                 Toggle(isOn: $abEnabled) {
                     label2("Enable audiobooks", "the organizer runs on the NAS every minute while enabled")
                 }.toggleStyle(.switch).tint(PX.plex)
-                FieldLabel("Drop folder", help: "where you drop new audiobooks (on the NAS share)")
-                pxTF($abDropPath, "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded")
+                FieldLabel("Drop folder", help: "shared with music import — audiobook-shaped drops (m4b/mp3, no FLAC) route here automatically")
+                pxTF($abDropPath, "/Volumes/MediaVolume3/plexify-imports")
                 FieldLabel("Library folder", help: "the folder your Plex audiobook library indexes")
                 pxTF($abLibraryPath, "/Volumes/MediaVolume3/Audiobooks")
                 FieldLabel("Plex library", help: "which Plex section is Audiobooks (created with the Audnexus agent)")
@@ -516,13 +516,12 @@ struct SettingsView: View {
         autostarEnabled = s.autostar_manage_enabled ?? false
         autostarDryRun = s.autostar_dry_run ?? false
         importEnabled = s.manual_import_enabled ?? false
-        importPath = s.manual_import_path ?? "/Volumes/MediaVolume3/Downloads/music/import"
+        importPath = s.manual_import_path ?? "/Volumes/MediaVolume3/plexify-imports"
         importDelete = s.manual_import_delete_unnecessary ?? false
         importRequireLiked = s.manual_import_require_liked ?? false
         importSongsOnly = s.manual_import_songs_only ?? false
         abEnabled = s.audiobook_enabled ?? false
-        abDropPath = s.audiobook_drop_path
-            ?? "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded"
+        abDropPath = s.audiobook_drop_path ?? "/Volumes/MediaVolume3/plexify-imports"
         abLibraryPath = s.audiobook_library_path ?? "/Volumes/MediaVolume3/Audiobooks"
         abSectionKey = s.plex_audiobook_section_key ?? ""
         abMinConfidence = Int(s.audiobook_min_confidence ?? "80") ?? 80

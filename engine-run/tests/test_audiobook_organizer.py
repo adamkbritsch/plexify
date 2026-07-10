@@ -220,5 +220,43 @@ class TestLedger(unittest.TestCase):
                 self.assertEqual(ab.book_records(), [])
 
 
+class TestImportRouting(unittest.TestCase):
+    """The unified plexify-imports folder: audiobook-shaped items route to auto-m4b's intake,
+    FLAC stays for the music pass (classification lives in import_folder)."""
+
+    def _mk(self, td, rel):
+        p = os.path.join(td, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(b"x")
+        return p
+
+    def test_classify(self):
+        from app import import_folder as IF
+        with tempfile.TemporaryDirectory() as td:
+            self._mk(td, "book.m4b")
+            self._mk(td, "song.flac")
+            self._mk(td, "loose.mp3")
+            self._mk(td, "album/01.flac"); self._mk(td, "album/02.mp3")   # mixed → music owns it
+            self._mk(td, "mp3book/part1.mp3"); self._mk(td, "mp3book/part2.mp3")
+            self._mk(td, "docs/readme.txt")
+            C = IF._classify_entry
+            self.assertEqual(C(os.path.join(td, "book.m4b")), "audiobook")
+            self.assertEqual(C(os.path.join(td, "song.flac")), "music")
+            self.assertEqual(C(os.path.join(td, "loose.mp3")), "audiobook")
+            self.assertEqual(C(os.path.join(td, "album")), "music")
+            self.assertEqual(C(os.path.join(td, "mp3book")), "audiobook")
+            self.assertEqual(C(os.path.join(td, "docs")), "other")
+
+    def test_entry_settled(self):
+        from app import import_folder as IF
+        with tempfile.TemporaryDirectory() as td:
+            p = self._mk(td, "b/part1.mp3")
+            d = os.path.join(td, "b")
+            self.assertFalse(IF._entry_settled(d, time.time()))          # fresh
+            old = time.time() - 600
+            os.utime(p, (old, old)); os.utime(d, (old, old))
+            self.assertTrue(IF._entry_settled(d, time.time()))           # old + quiet
+
+
 if __name__ == "__main__":
     unittest.main()

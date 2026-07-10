@@ -645,10 +645,10 @@
     <span>Enable music import <small class="muted">— auto-scans the folder every couple of minutes</small></span>
   </label>
   <label class="field">
-    <span class="field-label">Import folder <small class="muted">— where you drop files (on the NAS share)</small></span>
+    <span class="field-label">Import folder <small class="muted">— the shared plexify-imports drop; audiobook-shaped items (m4b/mp3, no FLAC) are auto-routed to the audiobook pipeline</small></span>
     <input type="text" id="mi-path" autocomplete="off"
-           value="{{ get_config('manual_import_path','/Volumes/MediaVolume3/Downloads/music/import') }}"
-           placeholder="/Volumes/MediaVolume3/Downloads/music/import">
+           value="{{ get_config('manual_import_path','/Volumes/MediaVolume3/plexify-imports') }}"
+           placeholder="/Volumes/MediaVolume3/plexify-imports">
   </label>
   <label class="row gap toggle-row">
     <input type="checkbox" id="mi-delete" {% if get_config('manual_import_delete_unnecessary','0')=='1' %}checked{% endif %}>
@@ -712,10 +712,10 @@
     <span>Enable audiobooks <small class="muted">— the organizer runs on the NAS every minute while enabled</small></span>
   </label>
   <label class="field">
-    <span class="field-label">Drop folder <small class="muted">— where you drop new audiobooks (on the NAS share)</small></span>
+    <span class="field-label">Drop folder <small class="muted">— shared with music import (plexify-imports); audiobooks are routed automatically</small></span>
     <input type="text" id="ab-drop" autocomplete="off"
-           value="{{ get_config('audiobook_drop_path','/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded') }}"
-           placeholder="/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded">
+           value="{{ get_config('audiobook_drop_path','/Volumes/MediaVolume3/plexify-imports') }}"
+           placeholder="/Volumes/MediaVolume3/plexify-imports">
   </label>
   <label class="field">
     <span class="field-label">Library folder <small class="muted">— the folder your Plex audiobook library indexes</small></span>

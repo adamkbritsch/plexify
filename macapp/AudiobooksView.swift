@@ -156,7 +156,7 @@ struct AudiobooksView: View {
 
     private func openDropFolder() {
         let path = store.settings?.audiobook_drop_path
-            ?? "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded"
+            ?? "/Volumes/MediaVolume3/plexify-imports"
         NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
     }
 }

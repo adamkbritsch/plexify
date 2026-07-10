@@ -3405,7 +3405,7 @@ def api_settings():
         # Plain text / url / number config.
         for _tk in ("plex_library_path", "slskd_url", "anthropic_model", "telegram_api_id",
                     "manual_import_path",
-                    "audiobook_drop_path", "audiobook_library_path",
+                    "audiobook_drop_path", "audiobook_library_path", "audiobook_intake_path",
                     "plex_audiobook_section_key", "audiobook_min_confidence"):
             if _tk in data:
                 set_config(_tk, str(data.get(_tk) or "").strip())
@@ -3538,7 +3538,7 @@ def api_settings():
         # Manual import
         "manual_import_enabled": _b("manual_import_enabled"),
         "manual_import_path": get_config("manual_import_path",
-                                         "/Volumes/MediaVolume3/Downloads/music/import") or "",
+                                         "/Volumes/MediaVolume3/plexify-imports") or "",
         "manual_import_delete_unnecessary": _b("manual_import_delete_unnecessary"),
         "manual_import_dry_run": _b("manual_import_dry_run"),
         "manual_import_require_liked": _b("manual_import_require_liked"),
@@ -3546,7 +3546,9 @@ def api_settings():
         # Audiobooks
         "audiobook_enabled": _b("audiobook_enabled"),
         "audiobook_drop_path": get_config(
-            "audiobook_drop_path",
+            "audiobook_drop_path", "/Volumes/MediaVolume3/plexify-imports") or "",
+        "audiobook_intake_path": get_config(
+            "audiobook_intake_path",
             "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded") or "",
         "audiobook_library_path": get_config(
             "audiobook_library_path", "/Volumes/MediaVolume3/Audiobooks") or "",

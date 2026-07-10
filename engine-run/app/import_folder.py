@@ -29,7 +29,9 @@ _DEFAULT_MIN_SECONDS = 15     # below this a FLAC is treated as a clip, not a so
                               # purpose — real songs get short (the Beatles' "Her Majesty" is 23s),
                               # so only true micro-clips are caught. Tune via manual_import_min_seconds.
 _INFLIGHT_SECS = 2 * 60       # skip files touched in the last 2 min (still copying)
-DEFAULT_IMPORT_PATH = "/Volumes/MediaVolume3/Downloads/music/import"
+# The unified drop folder: music AND audiobooks share it — the scan's Pass 0 routes
+# audiobook-shaped items to auto-m4b's intake, everything else flows through the music pass.
+DEFAULT_IMPORT_PATH = "/Volumes/MediaVolume3/plexify-imports"
 
 
 def _cfg_bool(key: str, default: str = "0") -> bool:
@@ -123,6 +125,107 @@ def pending_count(force: bool = False, wait: float = 3.0) -> int:
 
 def _import_path() -> str:
     return get_config("manual_import_path", DEFAULT_IMPORT_PATH) or DEFAULT_IMPORT_PATH
+
+
+# ── audiobook routing (unified import folder) ──────────────────────────────────────────────────
+# One drop folder for everything (plexify-imports): the scan ROUTES audiobook-shaped items into
+# auto-m4b's intake before the music pass runs. auto-m4b cannot watch the shared folder itself —
+# it moves/merges ANY audio it sees, so it would eat FLAC music drops. Classification is
+# deliberately simple and deterministic:
+#   • anything containing FLAC → music (the music pipeline is FLAC-only by design)
+#   • m4b / aax / mp3 / m4a-only items → audiobooks (music import would DISCARD these as lossy,
+#     so routing them to the audiobook pipeline is strictly better; its skip-not-guess matcher
+#     keeps junk out of the library)
+_AUDIOBOOK_EXTS = {".m4b", ".aax", ".mp3", ".m4a"}
+
+
+def _audiobook_intake_path() -> str:
+    return (get_config("audiobook_intake_path",
+                       "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded")
+            or "/Volumes/MediaVolume3/Downloads/audiobooks/auto-m4b/recentlyadded")
+
+
+def _classify_entry(path: str) -> str:
+    """'music' | 'audiobook' | 'other' for a TOP-LEVEL import-folder entry (file or folder)."""
+    if os.path.isfile(path):
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".flac":
+            return "music"
+        if ext in _AUDIOBOOK_EXTS:
+            return "audiobook"
+        return "other"
+    n_flac = n_ab = 0
+    for dp, dns, fns in os.walk(path):
+        for fn in fns:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext == ".flac":
+                n_flac += 1
+            elif ext in _AUDIOBOOK_EXTS:
+                n_ab += 1
+    if n_flac:
+        return "music"                       # FLAC present → the music pass owns it
+    return "audiobook" if n_ab else "other"
+
+
+def _entry_settled(path: str, now: float) -> bool:
+    """True when nothing under the entry was modified within the in-flight window."""
+    try:
+        newest = os.path.getmtime(path)
+        if os.path.isdir(path):
+            for dp, dns, fns in os.walk(path):
+                for fn in fns:
+                    try:
+                        newest = max(newest, os.path.getmtime(os.path.join(dp, fn)))
+                    except OSError:
+                        pass
+        return (now - newest) >= _INFLIGHT_SECS
+    except OSError:
+        return False
+
+
+def _route_audiobooks(root: str, out: dict, now: float) -> None:
+    """Pass 0 of the unified import: move audiobook-shaped top-level entries into auto-m4b's
+    intake folder (same share → cheap rename). Music/unknown entries are left for the music
+    pass. Only active while the audiobooks feature is on — otherwise behavior is unchanged
+    (lossy files keep being discarded by the music pass)."""
+    if (get_config("audiobook_enabled", "0") or "0") != "1":
+        return
+    intake = _audiobook_intake_path()
+    if not os.path.isdir(intake):
+        log.warning("manual_import: audiobook intake missing (%s) — routing skipped", intake)
+        return
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return
+    for name in entries:
+        if name.startswith(".") or name == "_unnecessary":
+            continue
+        src = os.path.join(root, name)
+        if _classify_entry(src) != "audiobook":
+            continue
+        if not _entry_settled(src, now):
+            out["skipped_inflight"] += 1
+            continue
+        dst = os.path.join(intake, name)
+        if os.path.exists(dst):
+            dst = os.path.join(intake, f"{os.path.splitext(name)[0]}_{int(now)}"
+                               + os.path.splitext(name)[1])
+        try:
+            shutil.move(src, dst)
+            _log_recovery_move_safe("import_route:audiobook", src, dst)
+            out["audiobooks_routed"] = out.get("audiobooks_routed", 0) + 1
+            log.info("manual_import: routed audiobook item %r to intake", name)
+        except OSError:
+            log.exception("manual_import: audiobook route failed for %s", name)
+
+
+def _log_recovery_move_safe(kind: str, src: str, dst: str) -> None:
+    try:
+        from .autofill_engine import _log_recovery_move
+        _log_recovery_move(kind, src, dst)
+    except Exception:
+        pass
 
 
 def _flac_quality(path: str) -> tuple[int, int]:
@@ -405,6 +508,11 @@ def manual_import_scan(dry_run: bool = False) -> dict:
         min_sec = _DEFAULT_MIN_SECONDS
     now = time.time()
     datestamp = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+
+    # ── PASS 0: unified import folder — route audiobook-shaped items (m4b/aax/mp3/m4a, no
+    # FLAC) into auto-m4b's intake before the music pass can discard them as lossy.
+    if not dry_run:
+        _route_audiobooks(root, out, now)
 
     def _reason(r):
         out["by_reason"][r] = out["by_reason"].get(r, 0) + 1

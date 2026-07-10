@@ -52,6 +52,13 @@ _JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 STAGING_ROOT = os.environ.get("STAGING_ROOT", "/downloads_music/staging")
 PORT = int(os.environ.get("DOWNLOADER_PORT", "8788"))
 TOKEN = os.environ.get("DOWNLOADER_TOKEN", "")
+# Audiobooks: auto-m4b's working tree (its /temp; untagged/ = organizer input), the final
+# Plex-indexed library, and the low-confidence review parking. The organizer runs HERE (near
+# storage) because MP4 tag writes can rewrite the whole multi-hundred-MB m4b.
+AUDIOBOOKS_TEMP_DIR = os.environ.get("AUDIOBOOKS_TEMP_DIR", "/downloads/audiobooks/auto-m4b")
+AUDIOBOOKS_LIBRARY_DIR = os.environ.get("AUDIOBOOKS_LIBRARY_DIR", "/audiobooks")
+AUDIOBOOKS_REVIEW_DIR = (os.environ.get("AUDIOBOOKS_REVIEW_DIR", "")
+                         or os.path.join(os.path.dirname(AUDIOBOOKS_TEMP_DIR.rstrip("/")), "review"))
 STATES = ("queued", "running", "ready", "failed")
 PRUNE_HOURS = float(os.environ.get("PRUNE_HOURS", "24"))
 _last_prune = [0.0]
@@ -380,6 +387,44 @@ def _worker():
             time.sleep(5)
 
 
+# ---------------------------------------------------------------- audiobooks
+_AB_NOW_LOCK = threading.Lock()   # one organize-now at a time (the pass itself also single-flights)
+
+
+def _audiobook_enabled() -> bool:
+    try:
+        from app.db import get_config
+        return (get_config("audiobook_enabled", "0") or "0") == "1"
+    except Exception:
+        return False
+
+
+def _audiobook_min_confidence() -> int:
+    try:
+        from app.db import get_config
+        return int(get_config("audiobook_min_confidence", "80") or "80")
+    except Exception:
+        return 80
+
+
+def _audiobook_dirs_ok() -> bool:
+    return os.path.isdir(AUDIOBOOKS_TEMP_DIR) and os.path.isdir(AUDIOBOOKS_LIBRARY_DIR)
+
+
+def _audiobook_worker():
+    """Organize untagged m4bs every 60s while the feature is enabled. Lazy import + broad
+    except so an organizer bug can never take down the download daemon."""
+    while True:
+        try:
+            if _audiobook_enabled() and _audiobook_dirs_ok():
+                from app.audiobook_organizer import organize_pass
+                organize_pass(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
+                              _audiobook_min_confidence(), AUDIOBOOKS_REVIEW_DIR)
+        except Exception:
+            log.exception("audiobook worker pass failed (continuing)")
+        time.sleep(60)
+
+
 # ---------------------------------------------------------------- HTTP API
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, obj):
@@ -409,6 +454,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "unauthorized"})
         if self.path == "/queue":
             return self._send(200, {"jobs": _all_jobs(), **counts})
+        if self.path == "/audiobooks/status":
+            try:
+                from app.audiobook_organizer import organizer_status
+                st = organizer_status(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
+                                      AUDIOBOOKS_REVIEW_DIR)
+            except Exception as e:
+                log.exception("audiobooks/status failed")
+                st = {"error": str(e)[:200]}
+            return self._send(200, {"ok": True, "enabled": _audiobook_enabled(),
+                                    "dirs_ok": _audiobook_dirs_ok(),
+                                    "temp_dir": AUDIOBOOKS_TEMP_DIR,
+                                    "library_dir": AUDIOBOOKS_LIBRARY_DIR, **st})
         if self.path.startswith("/job/"):
             jid = self.path[5:].strip("/")
             if not _JOB_ID_RE.match(jid):
@@ -420,13 +477,61 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authed():
             return self._send(401, {"error": "unauthorized"})
-        if self.path != "/enqueue":
+        if self.path not in ("/enqueue", "/audiobooks/organize-now",
+                             "/audiobooks/config", "/audiobooks/resolve"):
             return self._send(404, {"error": "not found"})
         try:
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n).decode() or "{}")
         except (ValueError, json.JSONDecodeError):
             return self._send(400, {"error": "bad json"})
+
+        if self.path == "/audiobooks/organize-now":
+            if not _audiobook_dirs_ok():
+                return self._send(200, {"ok": False, "started": False,
+                                        "error": "audiobook dirs not mounted"})
+            if not _AB_NOW_LOCK.acquire(blocking=False):
+                return self._send(200, {"ok": True, "started": False,
+                                        "error": "a pass is already running"})
+            def _one_shot():
+                try:
+                    from app.audiobook_organizer import organize_pass
+                    organize_pass(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
+                                  _audiobook_min_confidence(), AUDIOBOOKS_REVIEW_DIR)
+                except Exception:
+                    log.exception("organize-now pass failed")
+                finally:
+                    _AB_NOW_LOCK.release()
+            threading.Thread(target=_one_shot, daemon=True, name="ab-organize-now").start()
+            return self._send(200, {"ok": True, "started": True})
+
+        if self.path == "/audiobooks/config":
+            try:
+                from app.db import set_config
+                applied = 0
+                for k in ("audiobook_enabled", "audiobook_min_confidence"):
+                    if k in body and body[k] is not None:
+                        set_config(k, str(body[k]))
+                        applied += 1
+                return self._send(200, {"ok": True, "applied": applied})
+            except Exception as e:
+                log.exception("audiobooks/config failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
+
+        if self.path == "/audiobooks/resolve":
+            fn = str(body.get("file") or "")
+            if not fn or "/" in fn or "\\" in fn or ".." in fn:
+                return self._send(400, {"ok": False, "error": "bad file name"})
+            try:
+                from app.audiobook_organizer import resolve_book
+                res = resolve_book(fn, AUDIOBOOKS_REVIEW_DIR, AUDIOBOOKS_LIBRARY_DIR,
+                                   asin=body.get("asin") or None,
+                                   author=body.get("author") or None,
+                                   title=body.get("title") or None)
+                return self._send(200, res)
+            except Exception as e:
+                log.exception("audiobooks/resolve failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
         if body.get("source") not in ("soulseek", "spotiflac", "squid", "telegram"):
             return self._send(400, {"error": "source must be one of soulseek|spotiflac|squid|telegram"})
         # Apply the engine's forwarded source config (slskd/squid/telegram creds etc.) to this
@@ -485,7 +590,16 @@ def main():
             except (OSError, json.JSONDecodeError):
                 pass
     threading.Thread(target=_worker, daemon=True, name="drain").start()
-    log.info("plexify-downloader up: staging=%s queue=%s port=%d", STAGING_ROOT, QUEUE_DIR, PORT)
+    # Audiobook organizer loop (inert unless audiobook_enabled=1 AND the mounts exist —
+    # older deploys without the audiobook volumes just no-op).
+    try:
+        if os.path.isdir(os.path.dirname(AUDIOBOOKS_REVIEW_DIR)):
+            os.makedirs(AUDIOBOOKS_REVIEW_DIR, exist_ok=True)
+    except OSError:
+        pass
+    threading.Thread(target=_audiobook_worker, daemon=True, name="audiobooks").start()
+    log.info("plexify-downloader up: staging=%s queue=%s port=%d audiobooks=%s", STAGING_ROOT,
+             QUEUE_DIR, PORT, AUDIOBOOKS_TEMP_DIR if _audiobook_dirs_ok() else "unmounted")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

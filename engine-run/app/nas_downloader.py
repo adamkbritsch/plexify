@@ -66,9 +66,12 @@ _QUEUE_GRACE = 240   # extra wait on top of the source's own timeout (serial dae
 def _base_urls() -> list:
     try:
         from .db import get_config
-        u = (get_config("nas_downloader_url", "") or "").rstrip("/")
+        u = (get_config("nas_downloader_url", "") or "").strip()
         if u:
-            return [u]
+            # ';'-separated fallback list (same contract as NAS_DOWNLOADER_HOSTS): e.g. a
+            # Tailscale IP first with a LAN hostname behind it, so a VPN blip doesn't read
+            # as "daemon unreachable" while both machines sit on the same LAN.
+            return [h.rstrip("/") for h in u.split(";") if h.strip()]
     except Exception:
         pass
     return _HOSTS

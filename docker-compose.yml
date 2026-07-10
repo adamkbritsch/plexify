@@ -71,9 +71,17 @@ services:
       # folder your Plex audiobook library indexes. The organizer tags books NEAR STORAGE
       # in this daemon, then files them here. Harmless when unused.
       - ${AUDIOBOOKS_DIR:-./audiobooks}:/audiobooks
+      # The unified drop folder (music AND audiobooks share it): the daemon routes
+      # audiobook-shaped drops — bare m4bs, folders of mp3s, collections of m4bs,
+      # nested rips — into auto-m4b / the organizer every worker pass. FLAC drops
+      # are left for the music pipeline. CREATE THIS FOLDER YOURSELF (mkdir + chown
+      # to the PUID:PGID above) — letting Docker auto-create it makes it root-owned
+      # and every route fails with EACCES.
+      - ${IMPORTS_DIR:-./plexify-imports}:/plexify-imports
     # environment already above; the audiobook organizer additionally honors:
     #   AUDIOBOOKS_TEMP_DIR    (default /downloads/audiobooks/auto-m4b — auto-m4b's /temp)
     #   AUDIOBOOKS_LIBRARY_DIR (default /audiobooks)
+    #   AUDIOBOOKS_IMPORT_DIR  (default /plexify-imports — the unified drop folder)
 
   # ── Optional sources — uncomment to run them alongside Plexify ──────────────────────
   # auto-m4b:                    # audiobook mp3 -> chapterized m4b converter (Plexify's

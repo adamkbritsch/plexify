@@ -5,8 +5,20 @@ single file) into a watch folder and it comes out the other end as a single chap
 fully-tagged `.m4b` in your Plex audiobook library — cover, narrator, description and all.
 
 ```
-drop folder (recentlyadded/)
+plexify-imports/   (unified drop folder — music and audiobooks share it)
+      │  Plexify router (runs in plexify-downloader, every 60s): classifies each
+      │  drop by shape and sends it down the right path — FLAC is always left
+      │  for the music pipeline
+      ├──────────────► finished .m4b/.m4a books go STRAIGHT to untagged/
+      │                 • a bare m4b file            → one book
+      │                 • a folder with one m4b      → one book, named after the folder
+      │                 • a folder of SEVERAL m4bs   → a collection: every m4b becomes
+      │                                                its own book (never merged)
+      ▼
+recentlyadded/     (books that still need converting: mp3 / aax)
       │  auto-m4b (container): merges multi-file books into one chapterized m4b
+      │  (folders of mp3s ride in whole; nested rips like Book/_/*.mp3 are
+      │  flattened; multi-disc trees keep disc order via "CD1 - …" names)
       ▼
 untagged/
       │  Plexify organizer (runs in plexify-downloader, near storage):
@@ -15,6 +27,12 @@ untagged/
       ▼
 Audiobooks/<Author>/<Title>/<Title>.m4b   ←  your Plex "Audiobooks" library
 ```
+
+The name inference understands real-world rip naming: `Author - Title (Year) - Narrator`,
+`Title by Author Book N`, reading-order prefixes (`01 FW1.0 Earth Unaware`), `Book 4 - …`
+series prefixes, `{edition qualifiers}` and `read by <narrator>` suffixes, run-together
+CamelCase names, unicode colons, embedded ASINs (`[B0…]`), and multi-part sets
+(`(Part 1 of 3)` — parts file as ordered tracks of ONE book).
 
 Books the matcher isn't confident about wait in a **review queue** (Audiobooks page in the app)
 where you pick the right edition or type the author/title yourself — nothing is ever tagged on a

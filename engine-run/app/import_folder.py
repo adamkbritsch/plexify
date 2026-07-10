@@ -509,10 +509,25 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     now = time.time()
     datestamp = _dt.datetime.utcnow().strftime("%Y-%m-%d")
 
-    # ── PASS 0: unified import folder — route audiobook-shaped items (m4b/aax/mp3/m4a, no
+    # ── PASS 0 (retired): audiobook routing moved to the DAEMON (audiobook_organizer.
+    # route_imports, every worker pass) — it runs next to the storage, so no SMB dependency
+    # (macOS mounts intermittently go quarantine/read-only and every move here failed), it
+    # understands more shapes (collections of m4bs must be split, never merged), and running
+    # BOTH routers raced. The engine keeps only the classification helpers above for the
+    # settings preview. Original note: route audiobook-shaped items (m4b/aax/mp3/m4a, no
     # FLAC) into auto-m4b's intake before the music pass can discard them as lossy.
-    if not dry_run:
-        _route_audiobooks(root, out, now)
+    # What REMAINS the engine's job: never place or dispose of audiobook-shaped entries —
+    # they sit here only until the daemon's next routing pass, and quarantining their mp3s
+    # as "lossy" would eat someone's audiobook.
+    _ab_names: set = set()
+    if (get_config("audiobook_enabled", "0") or "0") == "1":
+        try:
+            for _n in os.listdir(root):
+                if not _n.startswith(".") and _n != "_unnecessary" \
+                        and _classify_entry(os.path.join(root, _n)) == "audiobook":
+                    _ab_names.add(_n)
+        except OSError:
+            pass
 
     def _reason(r):
         out["by_reason"][r] = out["by_reason"].get(r, 0) + 1
@@ -573,7 +588,11 @@ def manual_import_scan(dry_run: bool = False) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d != "_unnecessary"]   # never descend into our quarantine
+        if dp == root and _ab_names:
+            dns[:] = [d for d in dns if d not in _ab_names]    # audiobooks: daemon's, hands off
         audio = [f for f in fns if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
+        if dp == root and _ab_names:
+            audio = [f for f in audio if f not in _ab_names]
 
         _verified: dict = {}
         _tags_cache: dict = {}

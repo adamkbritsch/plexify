@@ -59,6 +59,9 @@ AUDIOBOOKS_TEMP_DIR = os.environ.get("AUDIOBOOKS_TEMP_DIR", "/downloads/audioboo
 AUDIOBOOKS_LIBRARY_DIR = os.environ.get("AUDIOBOOKS_LIBRARY_DIR", "/audiobooks")
 AUDIOBOOKS_REVIEW_DIR = (os.environ.get("AUDIOBOOKS_REVIEW_DIR", "")
                          or os.path.join(os.path.dirname(AUDIOBOOKS_TEMP_DIR.rstrip("/")), "review"))
+# The unified drop folder (books + music share it; the router only takes audiobook-shaped
+# entries). Routing runs HERE, near storage — instant same-volume renames, no SMB dependency.
+AUDIOBOOKS_IMPORT_DIR = os.environ.get("AUDIOBOOKS_IMPORT_DIR", "/plexify-imports")
 STATES = ("queued", "running", "ready", "failed")
 PRUNE_HOURS = float(os.environ.get("PRUNE_HOURS", "24"))
 _last_prune = [0.0]
@@ -417,7 +420,10 @@ def _audiobook_worker():
     while True:
         try:
             if _audiobook_enabled() and _audiobook_dirs_ok():
-                from app.audiobook_organizer import organize_pass
+                from app.audiobook_organizer import organize_pass, route_imports
+                if os.path.isdir(AUDIOBOOKS_IMPORT_DIR):
+                    route_imports(AUDIOBOOKS_IMPORT_DIR, AUDIOBOOKS_TEMP_DIR,
+                                  AUDIOBOOKS_REVIEW_DIR)
                 organize_pass(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
                               _audiobook_min_confidence(), AUDIOBOOKS_REVIEW_DIR)
         except Exception:
@@ -458,7 +464,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 from app.audiobook_organizer import organizer_status
                 st = organizer_status(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
-                                      AUDIOBOOKS_REVIEW_DIR)
+                                      AUDIOBOOKS_REVIEW_DIR,
+                                      AUDIOBOOKS_IMPORT_DIR if os.path.isdir(
+                                          AUDIOBOOKS_IMPORT_DIR) else None)
             except Exception as e:
                 log.exception("audiobooks/status failed")
                 st = {"error": str(e)[:200]}
@@ -495,7 +503,10 @@ class Handler(BaseHTTPRequestHandler):
                                         "error": "a pass is already running"})
             def _one_shot():
                 try:
-                    from app.audiobook_organizer import organize_pass
+                    from app.audiobook_organizer import organize_pass, route_imports
+                    if os.path.isdir(AUDIOBOOKS_IMPORT_DIR):
+                        route_imports(AUDIOBOOKS_IMPORT_DIR, AUDIOBOOKS_TEMP_DIR,
+                                      AUDIOBOOKS_REVIEW_DIR)
                     organize_pass(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
                                   _audiobook_min_confidence(), AUDIOBOOKS_REVIEW_DIR)
                 except Exception:

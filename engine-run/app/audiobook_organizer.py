@@ -91,7 +91,53 @@ def _clean_fragment(s: str) -> str:
     s = _BRACKET_RE.sub(" ", s or "")
     s = _JUNK_RE.sub(" ", s)
     s = _YEAR_RE.sub(" ", s)
+    s = s.replace("[", " ").replace("]", " ")   # stray unpaired brackets ('…Novel]')
     return " ".join(s.replace("_", " ").split()).strip(" -–.")
+
+
+# Real-world drop names (observed in Adam's plexify-imports dump) that plain
+# 'Author - Title' parsing can't read:
+#   '01 FW1.0 Earth Unaware'                       → reading-order + series-code prefix
+#   'Book 4 - Harry Potter and the Goblet of Fire (2000)'          → series prefix + year
+#   'Dark Age by Pierce Brown Book 5'              → 'Title by Author Book N'
+#   'The Iliad {Robert Fitzgerald Transl} read by Dan Stevens'     → braces + narrator suffix
+#   'Alexandre Dumas - The Count of Monte Cristo (2008) - John Lee' → trailing narrator segment
+#   'Sunrise on the Reaping꞉ A Hunger Games Novel]'                → unicode colon + stray bracket
+#   'AManCalledOveUnabridged'                      → CamelCase concatenation
+_UNICODE_COLONS = str.maketrans({"꞉": ":", "∶": ":", "：": ":"})
+_ORDER_CODE_RE = re.compile(r"^\s*\d{1,3}(?:\.\d+)?\s+(?:[A-Z]{1,4}\d+(?:\.\d+)?\s+)+")
+_BOOK_N_PREFIX_RE = re.compile(r"^\s*book\s+\d+\s*[-–—:]\s*", re.IGNORECASE)
+_BRACES_RE = re.compile(r"\{[^}]*\}")
+_READ_BY_RE = re.compile(r"[\s,(\-–—]*\b(?:read|narrated)\s+by\s+[^-–—]{2,60}$", re.IGNORECASE)
+# 'Title by First Last [Book N]' — the author must be 2+ Capitalized words so titles that merely
+# contain 'by' ('Death by Chocolate', 'Seduced by the Highlander', 'History by the Numbers')
+# don't lose their tail to a fake author. Deliberately CASE-SENSITIVE: IGNORECASE would let
+# lowercase words ('the Highlander') satisfy the [A-Z] guard.
+_BY_AUTHOR_RE = re.compile(
+    r"^(?P<t>.{3,}?)\s+[bB]y\s+(?P<a>[A-Z][\w.'’-]+(?:\s+[A-Z][\w.'’-]+){1,3})"
+    r"(?:[\s,]+[Bb]ook\s+\d+(?:\.\d+)?)?\s*$")
+
+
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z])(?=[A-Z0-9])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _normalize_name(s: str, camel: bool = True) -> str:
+    """Pre-inference cleanup of a raw drop name: unicode colon stand-ins, CamelCase
+    concatenations, reading-order/series-code prefixes, 'Book N -' series prefixes,
+    {…} qualifiers and 'read by <narrator>' suffixes.
+
+    CamelCase splitting needs 3+ case boundaries — real run-together names
+    ('AManCalledOveUnabridged') have many, while legitimately-CamelCase one-word titles
+    ('ReWork', 'SuperFreakonomics') have one and must survive intact. It is also skipped
+    for tag values (camel=False): tags are deliberate, not filesystem mangling."""
+    s = (s or "").translate(_UNICODE_COLONS)
+    if camel and " " not in s and len(_CAMEL_BOUNDARY_RE.findall(s)) >= 3:
+        s = _CAMEL_BOUNDARY_RE.sub(" ", s)
+    s = _ORDER_CODE_RE.sub("", s)
+    s = _BOOK_N_PREFIX_RE.sub("", s)
+    s = _BRACES_RE.sub(" ", s)
+    s = _READ_BY_RE.sub(" ", s)
+    return " ".join(s.split())
 
 
 def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
@@ -117,10 +163,27 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
         alb_clean, alb_part, alb_total = strip_part_info(t_album)
         if alb_part and "part" not in extra:
             extra["part"], extra["part_total"] = alb_part, alb_total
-        return {"title": _clean_fragment(alb_clean) or t_album,
-                "author": _clean_fragment(t_artist) or None, **extra}
+        # tag values inherit the rip's naming schemes too — same normalization as filenames
+        # (minus CamelCase splitting: a tag like 'SuperFreakonomics' is the real title)
+        return {"title": _clean_fragment(_normalize_name(alb_clean, camel=False)) or t_album,
+                "author": _clean_fragment(_normalize_name(t_artist, camel=False)) or None, **extra}
 
-    base = departed
+    base = _normalize_name(departed)
+    # 'Title by First Last Book N' — series rips name whole sets this way
+    m_by = _BY_AUTHOR_RE.match(base)
+    if m_by:
+        return {"title": _clean_fragment(m_by.group("t")),
+                "author": _clean_fragment(m_by.group("a")), **extra}
+    # 'Author - Title (Year) - Narrator': only drop a trailing segment as the narrator when a
+    # (year) in the KEPT segments corroborates the Author-Title-Year reading. Without that
+    # anchor, 'Author - Series - Title' rips ('Stephen King - The Dark Tower - The Waste
+    # Lands') would lose their real title and mis-tag as the wrong book in the series.
+    segs = base.split(" - ")
+    if len(segs) >= 3:
+        last = segs[-1].strip()
+        if (last and len(last.split()) <= 4 and not re.search(r"\d", last)
+                and _YEAR_RE.search(" - ".join(segs[:-1]))):
+            base = " - ".join(segs[:-1])
     # 'Title: Subtitle' — rips replace the ':' with '_' ('Dark Age (Dramatized Adaptation)_ Red
     # Rising, Book 5'). The subtitle makes the Audible search too specific (every term must
     # match) — search on the main title only.
@@ -137,12 +200,22 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
                          paren, re.IGNORECASE):
             return {"title": _clean_fragment(m.group("title")),
                     "author": _clean_fragment(paren) or None, **extra}
-    # 'Author - Title' (authors are short; long left sides are almost always the title)
+    # 'Author - Title' vs 'Title - Author' (authors are short: ≤4 words). When only the LEFT
+    # side is short it's the author; only the RIGHT short → it's the author ('The Wolf of Wall
+    # Street - Jordan Belfort'); BOTH short is ambiguous → primary reading plus a swapped
+    # alternate the search can fall back to (the author-mismatch veto kills the wrong one).
     if " - " in base:
         left, _, right = base.partition(" - ")
         left_c, right_c = _clean_fragment(left), _clean_fragment(right)
-        if left_c and right_c and len(left_c.split()) <= 4:
-            return {"title": right_c, "author": left_c, **extra}
+        if left_c and right_c:
+            l_short, r_short = len(left_c.split()) <= 4, len(right_c.split()) <= 4
+            if l_short and r_short:
+                return {"title": right_c, "author": left_c,
+                        "alts": [{"title": left_c, "author": right_c}], **extra}
+            if l_short:
+                return {"title": right_c, "author": left_c, **extra}
+            if r_short:
+                return {"title": left_c, "author": right_c, **extra}
     return {"title": _clean_fragment(base), "author": None, **extra}
 
 
@@ -244,21 +317,50 @@ def pick_candidate(guess: dict, candidates: list,
 
 def _search_ladder(guess: dict) -> list:
     """Audible search with progressive loosening — every query term must match, so an
-    over-specific title (subtitle, edition parentheticals) returns 0. Ladder: full title →
-    title without parentheticals; stop at the first non-empty rung."""
+    over-specific title (subtitle, edition parentheticals, run-on franchise subtitles like
+    '… A Hunger Games Novel') returns 0. Ladder: full title → without parentheticals →
+    without a trailing franchise subtitle → title WITHOUT the author constraint (rip author
+    fields are often wrong-shaped); stop at the first non-empty rung."""
     title = (guess.get("title") or "").strip()
     author = guess.get("author")
     tried = set()
-    rungs = [title, re.sub(r"\([^)]*\)", " ", title).strip()]
-    for q in rungs:
+    rungs = [(title, author),
+             (re.sub(r"\([^)]*\)", " ", title).strip(), author),
+             (re.sub(r"\bA\s+[A-Z][\w' ]{2,40}\s+Novel\s*$", " ", title).strip(), author)]
+    if author:
+        rungs.append((title, None))
+    for q, a in rungs:
         q = " ".join(q.split())
-        if not q or q.lower() in tried:
+        if not q or (q.lower(), (a or "").lower()) in tried:
             continue
-        tried.add(q.lower())
-        cands = audible_search(q, author)
+        tried.add((q.lower(), (a or "").lower()))
+        cands = audible_search(q, a)
         if cands:
             return cands
     return []
+
+
+def search_and_pick(guess: dict, min_confidence: int = _MIN_CONFIDENCE_DEFAULT) -> tuple:
+    """(best | None, score, candidates_for_review, guess_used). Runs the search ladder for the
+    primary reading of the name and then each alternate interpretation (guess['alts'], e.g. the
+    swapped side of an ambiguous 'X - Y'), letting the confidence gate decide which reading was
+    right. Candidates from every attempt are pooled so a review parking shows all options."""
+    interps = [guess] + [dict(guess, **a) for a in (guess.get("alts") or [])]
+    pooled, seen_asins = [], set()
+    best_overall_score = 0
+    for g in interps:
+        cands = _search_ladder(g)
+        for c in cands:
+            if c.get("asin") not in seen_asins:
+                seen_asins.add(c.get("asin"))
+                pooled.append(c)
+        if not cands:
+            continue
+        best, score = pick_candidate(g, cands, min_confidence)
+        if best is not None:
+            return best, score, pooled, g
+        best_overall_score = max(best_overall_score, score)
+    return None, best_overall_score, pooled, guess
 
 
 _AUTHOR_ROLE_RE = re.compile(
@@ -503,16 +605,24 @@ def _iter_untagged(untagged: str) -> list:
     return out
 
 
-def _cleanup_book_dir(container_dir: Optional[str]) -> None:
+def _cleanup_book_dir(container_dir: Optional[str], dest_dir: Optional[str] = None) -> None:
     """After the m4b leaves untagged/, drop the leftover sidecars (.chapters.txt — the chapter
-    data is embedded in the m4b) and the emptied folder."""
+    data is embedded in the m4b) and the emptied folder. Companion .pdf/.epub files (Audible
+    'this title includes a PDF') are USER CONTENT: when the book's library folder is known they
+    move there, beside the m4b; they are never deleted."""
     if not container_dir or not os.path.isdir(container_dir):
         return
     try:
         for fn in os.listdir(container_dir):
-            if fn.lower().endswith((".chapters.txt", ".txt", ".jpg", ".png")) or fn.startswith("."):
+            p = os.path.join(container_dir, fn)
+            if os.path.splitext(fn)[1].lower() in (".pdf", ".epub") and dest_dir:
                 try:
-                    os.remove(os.path.join(container_dir, fn))
+                    shutil.move(p, os.path.join(dest_dir, fn))
+                except OSError:
+                    pass
+            elif fn.lower().endswith((".chapters.txt", ".txt", ".jpg", ".png")) or fn.startswith("."):
+                try:
+                    os.remove(p)
                 except OSError:
                     pass
         if not os.listdir(container_dir):
@@ -581,8 +691,7 @@ def organize_pass(temp_dir: str, library_dir: str,
                     meta = fetch_audnexus(guess["asin"])
                     score = 100
                 if not meta:
-                    candidates = _search_ladder(guess)
-                    best, score = pick_candidate(guess, candidates, min_confidence)
+                    best, score, candidates, guess = search_and_pick(guess, min_confidence)
                     if best is None:
                         _park_for_review(path, review_dir, guess, candidates, score,
                                          "low_confidence" if candidates else "no_candidates")
@@ -597,7 +706,7 @@ def organize_pass(temp_dir: str, library_dir: str,
                     continue
                 _apply_part_info(meta, guess)
                 dest = _tag_and_file(path, meta, library_dir)
-                _cleanup_book_dir(container_dir)
+                _cleanup_book_dir(container_dir, os.path.dirname(dest))
                 _log_book({"status": "organized", "file": fn, "title": meta["title"],
                            "author": _pick_author(meta),
                            "asin": meta.get("asin"), "cover_url": meta.get("image"),
@@ -659,9 +768,11 @@ def resolve_book(file_name: str, review_dir: str, library_dir: str,
 # ── status for the UI ──────────────────────────────────────────────────────────────────────────
 
 def organizer_status(temp_dir: str, library_dir: str,
-                     review_dir: Optional[str] = None) -> dict:
+                     review_dir: Optional[str] = None,
+                     import_dir: Optional[str] = None) -> dict:
     """Stage counts + recent ledger records (each 'organized' record carries the Audnexus CDN
-    cover_url so the UI never reads covers over SMB)."""
+    cover_url so the UI never reads covers over SMB). 'dropped' includes books still waiting in
+    the unified import folder — the drop stage the user actually sees."""
     review_dir = review_dir or os.path.join(os.path.dirname(temp_dir.rstrip("/")), "review")
 
     def _count(sub, exts=None):
@@ -681,8 +792,10 @@ def organizer_status(temp_dir: str, library_dir: str,
             organized_total = sum(1 for l in fh if '"status": "organized"' in l or '"status":"organized"' in l)
     except OSError:
         pass
+    waiting = imports_waiting(import_dir) if import_dir else 0
     return {
-        "dropped": _count("recentlyadded"),
+        "dropped": _count("recentlyadded") + waiting,
+        "imports_waiting": waiting,
         "converting": _count("merge") + _count("fix"),
         "untagged": len(_iter_untagged(os.path.join(temp_dir, "untagged"))),
         "review": _count(None, {".m4b"}),
@@ -738,3 +851,353 @@ def plan_plex_reconcile(albums: list[dict]) -> dict:
         if (primary.get("title") or "") != want:
             retitles.append((primary["key"], want))
     return {"merges": merges, "retitles": retitles, "reindexes": reindexes}
+
+
+# ── import-folder routing (daemon-side) ──────────────────────────────────────────────────────
+# The unified drop folder (plexify-imports) lives on the SAME volume as auto-m4b's tree and the
+# library, so routing is instant renames — and running it in the daemon (every worker pass)
+# removes the Mac/SMB dependency entirely (macOS SMB mounts intermittently go quarantine/
+# read-only, which silently killed engine-side routing). The engine's PASS 0 router still covers
+# single-host deployments; when both can see the folder the first mover wins and the loser's
+# shutil.move raises a caught OSError.
+#
+# Shapes supported (all observed in one real drop):
+#   • bare .m4b/.m4a file            → straight to untagged/<stem>/ (no conversion needed —
+#                                      auto-m4b would only shuffle it through its serial queue)
+#   • bare .mp3/.aax file            → auto-m4b intake (needs conversion/merge)
+#   • folder of mp3s (+cover art)    → auto-m4b intake as ONE book
+#   • folder with ONE m4b            → untagged/, book named after the FOLDER (usually the
+#                                      informative name)
+#   • folder of SEVERAL m4bs         → a COLLECTION: each m4b is its own book, routed
+#                                      individually — never merged into one
+#   • mixed m4bs + mp3s              → m4bs out individually, the mp3 remainder converts
+#   • nested audio ('Book/_/*.mp3')  → the nest is flattened (single nest renamed to the top
+#                                      folder's name; multi-dir nests flatten with 'dir - file'
+#                                      prefixes so disc order survives)
+#   • anything containing FLAC       → left alone (the music pipeline owns FLAC)
+
+_CONVERT_EXTS = {".mp3", ".aax"}
+_READY_EXTS = {".m4b", ".m4a"}
+# Disposable-only: companion .pdf/.epub are USER CONTENT (Audible "this title includes a PDF")
+# and are carried along with the book, never deleted.
+_SIDECAR_EXTS = {".jpg", ".jpeg", ".png", ".txt", ".nfo", ".cue", ".log",
+                 ".m3u", ".m3u8", ".opf", ".db"}
+_COMPANION_EXTS = {".pdf", ".epub"}
+# Subfolders that are discs of ONE book (flatten + merge) rather than distinct books:
+# CD1 / Disc 2 / Disk_3 / Part 1 / D2 / bare numbers.
+_DISC_DIR_RE = re.compile(r"^(?:cd|disc|disk|part|d)?[\s_-]*\d+$", re.IGNORECASE)
+_PARTIAL_PREFIX = ".plexify-partial-"
+_route_size_memo: dict = {}
+_ROUTE_LOCK = threading.Lock()
+
+
+def _entry_footprint(path: str) -> tuple:
+    """(newest_mtime, total_size) over a file or tree — settle detection for import entries."""
+    newest, total = 0.0, 0
+    try:
+        st = os.stat(path)
+        newest, total = st.st_mtime, (st.st_size if os.path.isfile(path) else 0)
+        if os.path.isdir(path):
+            for dp, dns, fns in os.walk(path):
+                for fn in fns:
+                    try:
+                        s = os.stat(os.path.join(dp, fn))
+                        newest = max(newest, s.st_mtime)
+                        total += s.st_size
+                    except OSError:
+                        pass
+    except OSError:
+        return (0.0, -1)
+    return (newest, total)
+
+
+def _import_settled(path: str) -> bool:
+    """Old enough AND byte-stable across two worker passes — a user may still be copying in."""
+    newest, total = _entry_footprint(path)
+    if total < 0:
+        return False
+    prev = _route_size_memo.get(path)
+    _route_size_memo[path] = total
+    if time.time() - newest < _SETTLE_SECS:
+        return False
+    return prev is not None and prev == total
+
+
+def _classify_import_entry(path: str) -> str:
+    """'audiobook' | 'music' | 'skip' for a top-level import-folder entry."""
+    name = os.path.basename(path)
+    if name.startswith(".") or name == "_unnecessary" or os.path.islink(path):
+        return "skip"          # symlinks could pull data from OUTSIDE the drop folder
+    if os.path.isfile(path):
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".flac":
+            return "music"
+        return "audiobook" if ext in (_CONVERT_EXTS | _READY_EXTS) else "skip"
+    n_flac = n_audio = 0
+    for dp, dns, fns in os.walk(path):
+        for fn in fns:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext == ".flac":
+                n_flac += 1
+            elif ext in (_CONVERT_EXTS | _READY_EXTS):
+                n_audio += 1
+    if n_flac:
+        return "music"
+    return "audiobook" if n_audio else "skip"
+
+
+def _free_slot(parent: str, name: str) -> str:
+    """A destination under parent that doesn't collide; '<name>_<epoch>[_<n>]' on collision
+    (the counter matters — two collisions in the same second must not share a path)."""
+    dst = os.path.join(parent, name)
+    if not os.path.exists(dst):
+        return dst
+    stem, ext = os.path.splitext(name)
+    n = 0
+    while True:
+        suffix = f"_{int(time.time())}" + (f"_{n}" if n else "")
+        dst = os.path.join(parent, f"{stem}{suffix}{ext}")
+        if not os.path.exists(dst):
+            return dst
+        n += 1
+
+
+def _move_publish(src: str, dst: str) -> None:
+    """Move src (file or tree) to dst so dst APPEARS atomically. The import folder and the
+    auto-m4b/untagged trees are separate bind mounts in the container — same underlying volume,
+    but crossing a mount boundary makes shutil.move a slow copy+delete, and a plain copy would
+    let auto-m4b / the organizer grab a half-written book (or leave a plausible truncated file
+    after a crash). So: copy to a hidden '.plexify-partial-*' sibling first (both consumers skip
+    dotfiles), then os.rename onto the final name — same-directory renames are atomic. src is
+    only removed after the rename, so a crash mid-copy loses nothing."""
+    parent = os.path.dirname(dst)
+    os.makedirs(parent, exist_ok=True)
+    tmp = os.path.join(parent, _PARTIAL_PREFIX + os.path.basename(dst))
+    if os.path.exists(tmp):
+        shutil.rmtree(tmp, ignore_errors=True) if os.path.isdir(tmp) else os.remove(tmp)
+    try:
+        os.rename(src, dst)                     # same-mount fast path (already atomic)
+        return
+    except OSError:
+        pass
+    if os.path.isdir(src):
+        shutil.copytree(src, tmp)
+    else:
+        shutil.copy2(src, tmp)
+    os.rename(tmp, dst)
+    if os.path.isdir(src):
+        shutil.rmtree(src, ignore_errors=True)
+    else:
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+
+
+def _sweep_stale_partials(*dirs: str) -> None:
+    """Remove day-old '.plexify-partial-*' leftovers (a crash mid-copy abandons one; the
+    source survived, so the partial is pure junk)."""
+    cutoff = time.time() - 86400
+    for d in dirs:
+        try:
+            for name in os.listdir(d):
+                if not name.startswith(_PARTIAL_PREFIX):
+                    continue
+                p = os.path.join(d, name)
+                try:
+                    if os.path.getmtime(p) < cutoff:
+                        shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+
+def _route_ready_file(src: str, untagged: str, book_name: str, out: dict) -> str:
+    """One finished m4b/m4a → untagged/<book_name>/ in the organizer's folder-per-book shape.
+    When the book name is the richer container-folder name, the file is renamed to match so
+    filename inference reads the good name. Returns the book folder."""
+    ext = os.path.splitext(src)[1]
+    book_dir = _free_slot(untagged, _safe(book_name))
+    dst = os.path.join(book_dir, _safe(book_name) + ext)
+    _move_publish(src, dst)
+    _log_ab_move("audiobook_route:untagged", src, dst)
+    out["to_untagged"] += 1
+    return book_dir
+
+
+def _leftovers_only_sidecars(path: str) -> bool:
+    for dp, dns, fns in os.walk(path):
+        for fn in fns:
+            if not fn.startswith(".") and os.path.splitext(fn)[1].lower() not in _SIDECAR_EXTS:
+                return False
+    return True
+
+
+def _route_folder(src: str, intake: str, untagged: str, out: dict,
+                  book_name: Optional[str] = None, depth: int = 0) -> None:
+    name = book_name or os.path.basename(src)
+    ready, convert = [], []
+    for dp, dns, fns in os.walk(src):
+        for fn in sorted(fns):
+            if fn.startswith("."):
+                continue
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in _READY_EXTS:
+                ready.append(os.path.join(dp, fn))
+            elif ext in _CONVERT_EXTS:
+                convert.append(os.path.join(dp, fn))
+
+    # finished m4bs leave first — one m4b takes the folder's name, several are a collection
+    # of individual books named after their files
+    if len(ready) == 1 and not convert:
+        stem = os.path.splitext(os.path.basename(ready[0]))[0]
+        book = name if len(_normalize_name(name)) >= len(_normalize_name(stem)) else stem
+        book_dir = _route_ready_file(ready[0], untagged, book, out)
+        # Audible companion PDFs/ebooks belong WITH the book — carry them into its untagged
+        # folder; the organizer moves them on to the library beside the m4b.
+        for dp, dns, fns in os.walk(src):
+            for fn in fns:
+                if os.path.splitext(fn)[1].lower() in _COMPANION_EXTS:
+                    try:
+                        _move_publish(os.path.join(dp, fn), os.path.join(book_dir, fn))
+                    except OSError:
+                        pass
+    else:
+        for f in ready:
+            _route_ready_file(f, untagged, os.path.splitext(os.path.basename(f))[0], out)
+
+    if convert:
+        subdirs = {os.path.dirname(os.path.relpath(f, src)) for f in convert}
+        if subdirs == {""}:
+            # audio at the folder root → the whole folder is auto-m4b's book (covers ride along)
+            dst = _free_slot(intake, _safe(name))
+            _move_publish(src, dst)
+            _log_ab_move("audiobook_route:convert", src, dst)
+            out["to_convert"] += 1
+            return
+        first_level = {d.split(os.sep)[0] for d in subdirs}
+        if len(first_level) == 1:
+            # everything inside one nest ('Lord Of The Flies/_/*.mp3') → the nest IS the book,
+            # renamed to the informative top-level name
+            nest = os.path.join(src, first_level.pop())
+            dst = _free_slot(intake, _safe(name))
+            _move_publish(nest, dst)
+            _log_ab_move("audiobook_route:convert", nest, dst)
+            out["to_convert"] += 1
+        elif all(_DISC_DIR_RE.match(d) for d in first_level):
+            # multi-DISC rip (CD1/CD2/…) — ONE book: flatten into a hidden build dir with
+            # 'disc - file' names (disc order survives the merge), publish atomically
+            dst = _free_slot(intake, _safe(name))
+            build = os.path.join(intake, _PARTIAL_PREFIX + os.path.basename(dst))
+            shutil.rmtree(build, ignore_errors=True)
+            os.makedirs(build)
+            for f in convert:
+                rel = os.path.dirname(os.path.relpath(f, src)).replace(os.sep, " - ")
+                shutil.move(f, os.path.join(build, f"{rel} - {os.path.basename(f)}"))
+            os.rename(build, dst)
+            _log_ab_move("audiobook_route:convert_flattened", src, dst)
+            out["to_convert"] += 1
+        elif depth == 0:
+            # several NON-disc subfolders = several distinct BOOKS (the classic
+            # 'Author/Book1, Book2' layout) — route each one as its own book, named
+            # 'Top - Sub' so Author-Title inference gets both halves. Merging them into
+            # one m4b would be silent content corruption.
+            for sub in sorted(first_level):
+                _route_folder(os.path.join(src, sub), intake, untagged, out,
+                              book_name=f"{name} - {sub}", depth=1)
+        else:
+            # nested ambiguity below depth 1 — leave it for a human rather than guess
+            log.warning("route_imports: %r has nested non-disc subfolders — left in place", name)
+            out["errors"] += 1
+            return
+
+    if os.path.isdir(src):
+        if _leftovers_only_sidecars(src):
+            shutil.rmtree(src, ignore_errors=True)
+        else:
+            log.warning("route_imports: %r left behind (non-sidecar leftovers)", name)
+
+
+def route_imports(import_dir: str, temp_dir: str, review_dir: Optional[str] = None) -> dict:
+    """One routing pass over the unified import folder. Never raises; per-entry failures are
+    counted and logged. Music (FLAC) entries are always left for the music pipeline.
+    Single-flight: the 60s worker and an 'Organize now' one-shot must not route the same
+    entries concurrently."""
+    out = {"to_untagged": 0, "to_convert": 0, "left_for_music": 0,
+           "skipped_unsettled": 0, "errors": 0}
+    if not _ROUTE_LOCK.acquire(blocking=False):
+        out["skipped"] = "route pass already running"
+        return out
+    try:
+        return _route_imports_locked(import_dir, temp_dir, out)
+    finally:
+        _ROUTE_LOCK.release()
+
+
+def _route_imports_locked(import_dir: str, temp_dir: str, out: dict) -> dict:
+    intake = os.path.join(temp_dir, "recentlyadded")
+    untagged = os.path.join(temp_dir, "untagged")
+    if not (os.path.isdir(import_dir) and os.path.isdir(intake) and os.path.isdir(untagged)):
+        out["skipped"] = "dirs missing"
+        return out
+    _sweep_stale_partials(intake, untagged)
+    try:
+        entries = sorted(os.listdir(import_dir))
+    except OSError:
+        out["skipped"] = "unreadable import dir"
+        return out
+    # prune settle-memo entries that no longer exist (routed / user-removed) so a later
+    # same-named re-drop starts its two-pass stability check fresh
+    for k in list(_route_size_memo):
+        if not os.path.exists(k):
+            _route_size_memo.pop(k, None)
+    for entry in entries:
+        src = os.path.join(import_dir, entry)
+        kind = _classify_import_entry(src)
+        if kind == "skip":
+            continue
+        if kind == "music":
+            out["left_for_music"] += 1
+            continue
+        if not _import_settled(src):
+            out["skipped_unsettled"] += 1
+            continue
+        try:
+            if os.path.isfile(src):
+                ext = os.path.splitext(entry)[1].lower()
+                if ext in _READY_EXTS:
+                    _route_ready_file(src, untagged, os.path.splitext(entry)[0], out)
+                else:
+                    dst = _free_slot(intake, entry)
+                    shutil.move(src, dst)
+                    _log_ab_move("audiobook_route:convert", src, dst)
+                    out["to_convert"] += 1
+            else:
+                _route_folder(src, intake, untagged, out)
+        except OSError:
+            out["errors"] += 1
+            log.exception("route_imports failed for %r", entry)
+    if out["to_untagged"] or out["to_convert"]:
+        log.info("audiobook route_imports: %s", out)
+        _WAITING_CACHE["ts"] = 0.0        # counts changed — next status poll recomputes
+    return out
+
+
+_WAITING_CACHE = {"dir": "", "ts": 0.0, "n": 0}
+
+
+def imports_waiting(import_dir: str) -> int:
+    """How many audiobook-shaped entries sit in the unified import folder (drop-stage count).
+    Classification walks each entry's tree, and this runs on the status request path (the
+    engine polls every few seconds) — so the answer is cached for 30s."""
+    now = time.time()
+    if _WAITING_CACHE["dir"] == import_dir and now - _WAITING_CACHE["ts"] < 30:
+        return _WAITING_CACHE["n"]
+    try:
+        n = sum(1 for e in sorted(os.listdir(import_dir))
+                if _classify_import_entry(os.path.join(import_dir, e)) == "audiobook")
+    except OSError:
+        n = 0
+    _WAITING_CACHE.update(dir=import_dir, ts=now, n=n)
+    return n

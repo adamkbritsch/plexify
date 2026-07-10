@@ -392,6 +392,7 @@ struct AudiobooksStatusDTO: Codable {
     var converting: Int?
     var untagged: Int?
     var review: Int?
+    var review_items: [AudiobookDTO]?   // authoritative queue: review/ folder joined w/ ledger
     var organized_total: Int?
     var recent: [AudiobookDTO]?
     var library_visible: Bool?

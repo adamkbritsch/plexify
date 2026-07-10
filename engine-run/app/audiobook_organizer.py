@@ -851,6 +851,36 @@ def resolve_book(file_name: str, review_dir: str, library_dir: str,
 
 # ── status for the UI ──────────────────────────────────────────────────────────────────────────
 
+def review_items(review_dir: str, limit: int = 50) -> list:
+    """The review queue as the UI needs it: one entry per m4b ACTUALLY in review/, joined with
+    its latest ledger record (guess + candidates). The ledger's recent-window alone is not
+    enough — a busy day pushes outstanding review records past the window and the queue
+    silently disappears from the page while the files keep waiting (live bug 2026-07-10)."""
+    try:
+        names = sorted(n for n in os.listdir(review_dir)
+                       if n.lower().endswith(".m4b") and not n.startswith("."))
+    except OSError:
+        return []
+    latest: dict = {}
+    try:
+        with open(_ledger_path(BOOKS_LEDGER), encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("status") == "review" and rec.get("file"):
+                    latest[rec["file"]] = rec          # later lines win: latest record per file
+    except OSError:
+        pass
+    out = []
+    for n in names[:limit]:
+        rec = latest.get(n) or {"status": "review", "file": n, "reason": "unknown",
+                                "guess": {}, "candidates": []}
+        out.append(rec)
+    return out
+
+
 def organizer_status(temp_dir: str, library_dir: str,
                      review_dir: Optional[str] = None,
                      import_dir: Optional[str] = None) -> dict:
@@ -883,6 +913,7 @@ def organizer_status(temp_dir: str, library_dir: str,
         "converting": _count("merge") + _count("fix"),
         "untagged": len(_iter_untagged(os.path.join(temp_dir, "untagged"))),
         "review": _count(None, {".m4b"}),
+        "review_items": review_items(review_dir),
         "organized_total": organized_total,
         "recent": records,
         "library_visible": os.path.isdir(library_dir),

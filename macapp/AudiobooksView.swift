@@ -9,8 +9,12 @@ struct AudiobooksView: View {
 
     private var st: AudiobooksStatusDTO? { store.audiobooks }
     private var reviewItems: [AudiobookDTO] {
-        // Ledger is append-only: a review entry is still actionable only while no LATER
-        // organized record exists for the same file (recent is newest-first).
+        // The daemon reports the queue from the review FOLDER itself (joined with each file's
+        // ledger record) — deriving it from the recent-records window silently dropped
+        // outstanding items whenever a busy day pushed them past the window.
+        if let items = st?.review_items { return items }
+        // fallback for an older daemon: infer from the recent window (ledger is append-only —
+        // a review entry is actionable only while no LATER organized record names the file)
         let recent = st?.recent ?? []
         var organized = Set<String>()
         var seen = Set<String>()

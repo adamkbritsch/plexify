@@ -6,6 +6,7 @@ narrator segments, unicode colon stand-ins, {…} qualifiers with 'read by' suff
 CamelCase concatenations, an m4b collection folder, nested and multi-disc mp3 folders,
 and FLAC that belongs to the music pipeline.
 """
+import json
 import os
 import shutil
 import tempfile
@@ -581,6 +582,43 @@ class TestItunesCoverFallback(unittest.TestCase):
 
     def test_no_results_returns_none(self):
         self.assertIsNone(ab.itunes_cover_search("Nope", "Nobody", session=self._session([])))
+
+
+
+
+class TestReviewItems(unittest.TestCase):
+    """The review queue must come from the review FOLDER, not the recent-records window —
+    a busy day pushed 9 outstanding items past the window and the UI showed count-with-no-rows."""
+
+    def test_folder_is_source_of_truth_with_ledger_join(self):
+        with tempfile.TemporaryDirectory() as d:
+            review = os.path.join(d, "review"); os.makedirs(review)
+            open(os.path.join(review, "Waiting.m4b"), "w").write("x")
+            open(os.path.join(review, "NeverLogged.m4b"), "w").write("x")
+            with mock.patch.object(ab, "DATA_DIR", d):
+                with open(os.path.join(d, ab.BOOKS_LEDGER), "w") as fh:
+                    fh.write(json.dumps({"status": "review", "file": "Waiting.m4b",
+                                         "reason": "no_candidates",
+                                         "guess": {"title": "Waiting"},
+                                         "candidates": [{"asin": "B1"}]}) + "\n")
+                    # 40 organized records AFTER it — enough to push it out of any window
+                    for i in range(40):
+                        fh.write(json.dumps({"status": "organized", "file": f"o{i}.m4b"}) + "\n")
+                items = ab.review_items(review)
+            files = {i["file"]: i for i in items}
+            self.assertIn("Waiting.m4b", files)
+            self.assertEqual(files["Waiting.m4b"]["reason"], "no_candidates")
+            self.assertEqual(files["Waiting.m4b"]["candidates"], [{"asin": "B1"}])
+            self.assertIn("NeverLogged.m4b", files)   # present even without a ledger record
+
+    def test_resolved_files_disappear(self):
+        with tempfile.TemporaryDirectory() as d:
+            review = os.path.join(d, "review"); os.makedirs(review)
+            with mock.patch.object(ab, "DATA_DIR", d):
+                with open(os.path.join(d, ab.BOOKS_LEDGER), "w") as fh:
+                    fh.write(json.dumps({"status": "review", "file": "Gone.m4b",
+                                         "reason": "no_candidates"}) + "\n")
+                self.assertEqual(ab.review_items(review), [])
 
 
 if __name__ == "__main__":

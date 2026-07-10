@@ -67,8 +67,25 @@ services:
       # Named volume for the same root:root reason as the engine's /data (see above).
       - plexify-downloader-data:/data
       - ${DOWNLOADS_DIR:?set DOWNLOADS_DIR in .env}:/downloads
+      # Audiobooks (optional — pairs with the auto-m4b service below): the final library
+      # folder your Plex audiobook library indexes. The organizer tags books NEAR STORAGE
+      # in this daemon, then files them here. Harmless when unused.
+      - ${AUDIOBOOKS_DIR:-./audiobooks}:/audiobooks
+    # environment already above; the audiobook organizer additionally honors:
+    #   AUDIOBOOKS_TEMP_DIR    (default /downloads/audiobooks/auto-m4b — auto-m4b's /temp)
+    #   AUDIOBOOKS_LIBRARY_DIR (default /audiobooks)
 
   # ── Optional sources — uncomment to run them alongside Plexify ──────────────────────
+  # auto-m4b:                    # audiobook mp3 -> chapterized m4b converter (Plexify's
+  #   image: seanap/auto-m4b     # organizer then tags + files the output; maintained
+  #   container_name: plexify-auto-m4b        # drop-in fork: philiptn/auto-m4b)
+  #   restart: unless-stopped
+  #   environment: ["PUID=1000", "PGID=10", "CPU_CORES=2", "SLEEPTIME=1m", "MAKE_BACKUP=Y"]
+  #   volumes:
+  #     - ./auto-m4b-config:/config
+  #     - ${DOWNLOADS_DIR}/audiobooks/auto-m4b:/temp
+  #   # drop books into ${DOWNLOADS_DIR}/audiobooks/auto-m4b/recentlyadded — see docs/AUDIOBOOKS.md
+  #
   # slskd:                       # Soulseek (free peer-to-peer FLAC source)
   #   image: slskd/slskd:latest
   #   container_name: slskd

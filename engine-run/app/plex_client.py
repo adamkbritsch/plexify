@@ -161,6 +161,61 @@ def trigger_audiobook_scan() -> bool:
         return False
 
 
+def reconcile_audiobook_albums() -> dict:
+    """Heal multi-part split damage in the audiobook section: parts arriving across separate
+    scans can split one book into several albums (per-part agent titles, sometimes under a
+    duplicate local:// artist). Snapshot the section, let the organizer's pure planner decide,
+    apply: merge split albums, title multi-part albums after their book folder (locked), restore
+    part track numbers (locked). No-op when nothing is split — safe to run from the tick."""
+    import os
+    from urllib.parse import urlencode
+    from . import audiobook_organizer
+
+    out = {"merged": 0, "retitled": 0, "reindexed": 0}
+    plex = _connect()
+    sec = _audiobook_section(plex) if plex else None
+    if not sec:
+        return out
+    try:
+        snapshot = []
+        for alb in sec.albums():
+            tracks, dirs = [], {}
+            for t in alb.tracks():
+                f = ""
+                try:
+                    f = t.media[0].parts[0].file or ""
+                except (IndexError, AttributeError):
+                    pass
+                if f:
+                    d = os.path.dirname(f)
+                    dirs[d] = dirs.get(d, 0) + 1
+                tracks.append({"key": t.ratingKey, "index": t.trackNumber, "file": f})
+            snapshot.append({
+                "key": alb.ratingKey,
+                "title": alb.title or "",
+                "dir": max(dirs, key=dirs.get) if dirs else "",
+                "agent_matched": not str(getattr(alb, "guid", "") or "").startswith("local://"),
+                "tracks": tracks,
+            })
+        plan = audiobook_organizer.plan_plex_reconcile(snapshot)
+        for primary, others in plan["merges"]:
+            plex.query(f"/library/metadata/{primary}/merge?ids={','.join(str(k) for k in others)}",
+                       method=plex._session.put)
+            out["merged"] += len(others)
+        for key, title in plan["retitles"]:
+            q = urlencode({"type": 9, "title.value": title, "title.locked": 1,
+                           "titleSort.value": title, "titleSort.locked": 1})
+            plex.query(f"/library/metadata/{key}?{q}", method=plex._session.put)
+            out["retitled"] += 1
+        for key, idx in plan["reindexes"]:
+            q = urlencode({"type": 10, "index.value": idx, "index.locked": 1})
+            plex.query(f"/library/metadata/{key}?{q}", method=plex._session.put)
+            out["reindexed"] += 1
+    except Exception:
+        log.exception("reconcile_audiobook_albums failed")
+    return out
+
+
 def create_audiobook_section(location: str, name: str = "Audiobooks") -> dict:
     """Create the Audiobooks library (Music type + Audnexus agent + Plex Music Scanner).
     Requires the Audnexus.bundle agent to already be installed and Plex restarted — otherwise

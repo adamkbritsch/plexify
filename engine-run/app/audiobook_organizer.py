@@ -690,3 +690,51 @@ def organizer_status(temp_dir: str, library_dir: str,
         "recent": records,
         "library_visible": os.path.isdir(library_dir),
     }
+
+
+# ── Plex-side reconcile planning ──────────────────────────────────────────────
+# Multi-part books can SPLIT in Plex when parts arrive across separate scans: the Audnexus agent
+# matches each part's own product (part-specific album titles), and a track scanned mid-refresh
+# can land under a duplicate local:// artist with its own album. The organizer's files and tags
+# are already right, so the fix is mechanical — this pure planner decides it from a snapshot and
+# the engine's plex_client applies it (keeps the logic unit-testable without a Plex server).
+
+def plan_plex_reconcile(albums: list[dict]) -> dict:
+    """albums: [{key, title, dir, agent_matched, tracks: [{key, index, file}]}] — one entry per
+    album in the audiobook section, `dir` = the library folder its files live in.
+
+    Returns {merges: [(primary_key, [other_keys])], retitles: [(album_key, title)],
+    reindexes: [(track_key, part_number)]}:
+    - albums sharing one book folder merge into the agent-matched (else largest) one
+    - a multi-part album is titled after its book folder — any per-part agent title is wrong
+    - part tracks whose track number doesn't match their part number get it restored
+    """
+    by_dir: dict[str, list[dict]] = {}
+    for a in albums:
+        if a.get("dir"):
+            by_dir.setdefault(a["dir"], []).append(a)
+
+    merges, retitles, reindexes = [], [], []
+    for d, group in by_dir.items():
+        primary = sorted(group, key=lambda a: (not a.get("agent_matched"),
+                                               -len(a.get("tracks") or []),
+                                               str(a.get("key"))))[0]
+        if len(group) > 1:
+            merges.append((primary["key"], [a["key"] for a in group if a is not primary]))
+
+        multipart = False
+        for t in (t for a in group for t in (a.get("tracks") or [])):
+            base = os.path.splitext(os.path.basename(t.get("file") or ""))[0]
+            _, part, _total = strip_part_info(base)
+            if part is None:
+                continue
+            multipart = True
+            if t.get("index") != part:
+                reindexes.append((t["key"], part))
+        if not multipart:
+            continue
+
+        want = os.path.basename(d)
+        if (primary.get("title") or "") != want:
+            retitles.append((primary["key"], want))
+    return {"merges": merges, "retitles": retitles, "reindexes": reindexes}

@@ -361,5 +361,64 @@ class TestImportRouting(unittest.TestCase):
             self.assertTrue(IF._entry_settled(d, time.time()))           # old + quiet
 
 
+class TestPlanPlexReconcile(unittest.TestCase):
+    """Models the real 2026-07-10 split: Dark Age parts landed as TWO albums (parts 1+3 under the
+    agent-matched album, part 2 under a duplicate local artist), both titled with the part-3
+    agent product, parts 1+2 missing track numbers."""
+
+    DIR = "/audiobooks/Pierce Brown/Dark Age [Dramatized Adaptation]"
+
+    def _track(self, key, index, part):
+        return {"key": key, "index": index,
+                "file": f"{self.DIR}/Dark Age [Dramatized Adaptation] - Part {part:02d}.m4b"}
+
+    def test_split_album_merged_retitled_reindexed(self):
+        albums = [
+            {"key": 142121, "title": "Dark Age (3 of 3) [Dramatized Adaptation]: Red Rising 5",
+             "dir": self.DIR, "agent_matched": True,
+             "tracks": [self._track(142125, None, 1), self._track(142122, 3, 3)]},
+            {"key": 142126, "title": "Dark Age (3 of 3) [Dramatized Adaptation]: Red Rising 5",
+             "dir": self.DIR, "agent_matched": False,
+             "tracks": [self._track(142127, None, 2)]},
+        ]
+        plan = ab.plan_plex_reconcile(albums)
+        self.assertEqual(plan["merges"], [(142121, [142126])])
+        self.assertEqual(plan["retitles"], [(142121, "Dark Age [Dramatized Adaptation]")])
+        self.assertEqual(sorted(plan["reindexes"]), [(142125, 1), (142127, 2)])
+
+    def test_clean_multipart_album_is_noop(self):
+        albums = [{"key": 1, "title": "Dark Age [Dramatized Adaptation]", "dir": self.DIR,
+                   "agent_matched": True,
+                   "tracks": [self._track(11, 1, 1), self._track(12, 2, 2), self._track(13, 3, 3)]}]
+        plan = ab.plan_plex_reconcile(albums)
+        self.assertEqual(plan, {"merges": [], "retitles": [], "reindexes": []})
+
+    def test_single_file_book_untouched(self):
+        # single books keep their (often richer) agent title — no part marker, no intervention
+        albums = [{"key": 2, "title": "The Art of War: The Definitive Edition",
+                   "dir": "/audiobooks/Sun Tzu/The Art of War", "agent_matched": True,
+                   "tracks": [{"key": 21, "index": 1,
+                               "file": "/audiobooks/Sun Tzu/The Art of War/The Art of War.m4b"}]}]
+        plan = ab.plan_plex_reconcile(albums)
+        self.assertEqual(plan, {"merges": [], "retitles": [], "reindexes": []})
+
+    def test_unsplit_multipart_with_part_title_still_retitled(self):
+        albums = [{"key": 3, "title": "Dark Age (1 of 3) [Dramatized Adaptation]", "dir": self.DIR,
+                   "agent_matched": True, "tracks": [self._track(31, 1, 1)]}]
+        plan = ab.plan_plex_reconcile(albums)
+        self.assertEqual(plan["merges"], [])
+        self.assertEqual(plan["retitles"], [(3, "Dark Age [Dramatized Adaptation]")])
+
+    def test_merge_prefers_agent_matched_album(self):
+        albums = [
+            {"key": 5, "title": "X", "dir": self.DIR, "agent_matched": False,
+             "tracks": [self._track(51, 1, 1), self._track(52, 2, 2)]},
+            {"key": 4, "title": "X", "dir": self.DIR, "agent_matched": True,
+             "tracks": [self._track(41, 3, 3)]},
+        ]
+        plan = ab.plan_plex_reconcile(albums)
+        self.assertEqual(plan["merges"], [(4, [5])])
+
+
 if __name__ == "__main__":
     unittest.main()

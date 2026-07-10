@@ -90,6 +90,20 @@ def audiobook_tick() -> dict:
             except Exception:
                 log.exception("audiobook_tick: plex scan trigger failed")
             set_config("audiobook_last_organized_count", str(total))
+            # The scan is async and multi-part books can split across scans (per-part agent
+            # matches, duplicate local artists) — flag a reconcile for the FOLLOWING ticks,
+            # when the scan has had time to land.
+            set_config("audiobook_reconcile_pending", "1")
+        elif (get_config("audiobook_reconcile_pending", "0") or "0") == "1":
+            try:
+                from . import plex_client
+                rec = plex_client.reconcile_audiobook_albums()
+                out["reconcile"] = rec
+                if not any(rec.values()):
+                    # a pass that changed nothing means the section has settled clean
+                    set_config("audiobook_reconcile_pending", "0")
+            except Exception:
+                log.exception("audiobook_tick: reconcile failed")
     except Exception:
         log.exception("audiobook_tick failed")
     return out

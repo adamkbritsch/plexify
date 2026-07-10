@@ -859,10 +859,13 @@ def plan_plex_reconcile(albums: list[dict]) -> dict:
     album in the audiobook section, `dir` = the library folder its files live in.
 
     Returns {merges: [(primary_key, [other_keys])], retitles: [(album_key, title)],
-    reindexes: [(track_key, part_number)]}:
+    reindexes: [(track_key, part_number)], refreshes: [album_key]}:
     - albums sharing one book folder merge into the agent-matched (else largest) one
     - a multi-part album is titled after its book folder — any per-part agent title is wrong
     - part tracks whose track number doesn't match their part number get it restored
+    - '[Unknown Album]' placeholders (a scan caught a file before its tags existed) get a
+      metadata refresh — REFRESH ONLY: never plan a metadata delete (with Plex's media
+      deletion enabled that endpoint deletes the FILES; learned the hard way 2026-07-10)
     """
     by_dir: dict[str, list[dict]] = {}
     for a in albums:
@@ -870,6 +873,8 @@ def plan_plex_reconcile(albums: list[dict]) -> dict:
             by_dir.setdefault(a["dir"], []).append(a)
 
     merges, retitles, reindexes = [], [], []
+    refreshes = [a["key"] for a in albums
+                 if (a.get("title") or "").strip().lower() in ("[unknown album]", "")]
     for d, group in by_dir.items():
         primary = sorted(group, key=lambda a: (not a.get("agent_matched"),
                                                -len(a.get("tracks") or []),
@@ -892,7 +897,8 @@ def plan_plex_reconcile(albums: list[dict]) -> dict:
         want = os.path.basename(d)
         if (primary.get("title") or "") != want:
             retitles.append((primary["key"], want))
-    return {"merges": merges, "retitles": retitles, "reindexes": reindexes}
+    return {"merges": merges, "retitles": retitles, "reindexes": reindexes,
+            "refreshes": refreshes}
 
 
 # ── import-folder routing (daemon-side) ──────────────────────────────────────────────────────

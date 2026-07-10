@@ -211,6 +211,12 @@ def reconcile_audiobook_albums() -> dict:
             q = urlencode({"type": 10, "index.value": idx, "index.locked": 1})
             plex.query(f"/library/metadata/{key}?{q}", method=plex._session.put)
             out["reindexed"] += 1
+        for key in plan.get("refreshes", []):
+            # '[Unknown Album]' = a scan caught the file mid-copy; its tags exist now, so a
+            # metadata refresh repairs the title. NEVER a delete — with allowMediaDeletion
+            # on, DELETE /library/metadata removes the FILES (2026-07-10 incident).
+            plex.query(f"/library/metadata/{key}/refresh", method=plex._session.put)
+            out["refreshed"] = out.get("refreshed", 0) + 1
     except Exception:
         log.exception("reconcile_audiobook_albums failed")
     return out

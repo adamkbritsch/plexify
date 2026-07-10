@@ -391,7 +391,8 @@ class TestPlanPlexReconcile(unittest.TestCase):
                    "agent_matched": True,
                    "tracks": [self._track(11, 1, 1), self._track(12, 2, 2), self._track(13, 3, 3)]}]
         plan = ab.plan_plex_reconcile(albums)
-        self.assertEqual(plan, {"merges": [], "retitles": [], "reindexes": []})
+        self.assertEqual(plan, {"merges": [], "retitles": [], "reindexes": [],
+                                "refreshes": []})
 
     def test_single_file_book_untouched(self):
         # single books keep their (often richer) agent title — no part marker, no intervention
@@ -400,7 +401,8 @@ class TestPlanPlexReconcile(unittest.TestCase):
                    "tracks": [{"key": 21, "index": 1,
                                "file": "/audiobooks/Sun Tzu/The Art of War/The Art of War.m4b"}]}]
         plan = ab.plan_plex_reconcile(albums)
-        self.assertEqual(plan, {"merges": [], "retitles": [], "reindexes": []})
+        self.assertEqual(plan, {"merges": [], "retitles": [], "reindexes": [],
+                                "refreshes": []})
 
     def test_unsplit_multipart_with_part_title_still_retitled(self):
         albums = [{"key": 3, "title": "Dark Age (1 of 3) [Dramatized Adaptation]", "dir": self.DIR,
@@ -408,6 +410,14 @@ class TestPlanPlexReconcile(unittest.TestCase):
         plan = ab.plan_plex_reconcile(albums)
         self.assertEqual(plan["merges"], [])
         self.assertEqual(plan["retitles"], [(3, "Dark Age [Dramatized Adaptation]")])
+
+    def test_unknown_album_placeholder_gets_refresh_never_delete(self):
+        # a scan that catches a file mid-copy leaves '[Unknown Album]' — heal via metadata
+        # refresh ONLY (a delete would remove the FILES with allowMediaDeletion on)
+        albums = [{"key": 9, "title": "[Unknown Album]", "dir": self.DIR,
+                   "agent_matched": False, "tracks": [self._track(91, 1, 1)]}]
+        plan = ab.plan_plex_reconcile(albums)
+        self.assertEqual(plan["refreshes"], [9])
 
     def test_merge_prefers_agent_matched_album(self):
         albums = [

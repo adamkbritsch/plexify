@@ -220,6 +220,109 @@ class TestLedger(unittest.TestCase):
                 self.assertEqual(ab.book_records(), [])
 
 
+class TestPartsAndAsin(unittest.TestCase):
+    """Multi-part releases sort into ONE book; embedded ASINs skip the search entirely.
+    Canonical example: 'Dark Age (Part 1 of 3) (Dramatized Adaptation) [B0FF5CWGK6]'."""
+
+    EXAMPLE = "/x/Dark Age (Part 1 of 3) (Dramatized Adaptation) [B0FF5CWGK6].m4b"
+
+    def test_asin_extracted(self):
+        g = ab.infer_book_guess(self.EXAMPLE)
+        self.assertEqual(g.get("asin"), "B0FF5CWGK6")
+
+    def test_part_extracted_and_title_keeps_edition(self):
+        g = ab.infer_book_guess(self.EXAMPLE)
+        self.assertEqual(g.get("part"), 1)
+        self.assertEqual(g.get("part_total"), 3)
+        self.assertIn("Dark Age", g["title"])
+        self.assertIn("Dramatized Adaptation", g["title"])   # edition qualifier is NOT an author
+        self.assertNotIn("Part", g["title"])
+        self.assertIsNone(g.get("author"))
+
+    def test_strip_part_variants(self):
+        self.assertEqual(ab.strip_part_info("Dark Age (Part 2 of 3)")[1:], (2, 3))
+        self.assertEqual(ab.strip_part_info("Dark Age - Part 3")[1:], (3, None))
+        self.assertEqual(ab.strip_part_info("Dark Age Pt. 2")[1:], (2, None))
+        self.assertEqual(ab.strip_part_info("Dark Age (2 of 3)")[1:], (2, 3))
+        self.assertEqual(ab.strip_part_info("Dark Age")[1:], (None, None))
+
+    def test_parts_share_one_album_folder(self):
+        meta1 = {"title": "Dark Age (Dramatized Adaptation)", "authors": ["Pierce Brown"],
+                 "part": 1, "part_total": 3}
+        meta2 = dict(meta1, part=2)
+        d1 = ab.dest_for(meta1, "/lib")
+        d2 = ab.dest_for(meta2, "/lib")
+        self.assertEqual(os.path.dirname(d1), os.path.dirname(d2))   # SAME book folder
+        self.assertTrue(d1.endswith("Dark Age (Dramatized Adaptation) - Part 01.m4b"))
+        self.assertTrue(d2.endswith("Dark Age (Dramatized Adaptation) - Part 02.m4b"))
+
+    def test_part_tags_group_and_order(self):
+        meta = {"title": "Dark Age", "authors": ["Pierce Brown"], "narrators": [],
+                "release_date": "", "summary": "", "image": "", "genres": [],
+                "series": "", "series_position": "", "part": 2, "part_total": 3}
+        t = ab.build_mp4_tags(meta)
+        self.assertEqual(t["\xa9alb"], "Dark Age")            # shared album = one Plex book
+        self.assertEqual(t["\xa9nam"], "Dark Age - Part 2")
+        self.assertEqual(t["trkn"], [(2, 3)])
+
+    def test_apply_part_info_from_audnexus_title(self):
+        # the part product's OWN Audnexus title carries the marker — must not become
+        # a separate per-part book
+        meta = {"title": "Dark Age (Part 1 of 3) (Dramatized Adaptation)",
+                "authors": ["Pierce Brown"]}
+        ab._apply_part_info(meta, {"title": "whatever"})
+        self.assertEqual(meta["title"], "Dark Age (Dramatized Adaptation)")
+        self.assertEqual(meta["part"], 1)
+        self.assertEqual(meta["part_total"], 3)
+
+
+class TestPartAwareMatching(unittest.TestCase):
+    DARK_AGE_CANDS = [
+        {"asin": "P3", "title": "Dark Age (3 of 3) [Dramatized Adaptation]", "authors": ["Pierce Brown"]},
+        {"asin": "P1", "title": "Dark Age (1 of 3) [Dramatized Adaptation]", "authors": ["Pierce Brown"]},
+        {"asin": "P2", "title": "Dark Age (2 of 3) [Dramatized Adaptation]", "authors": ["Pierce Brown"]},
+    ]
+
+    def test_part_file_matches_its_own_part_product(self):
+        # part 3 lists FIRST in real search results — a part-1 file must still pick part 1
+        g = {"title": "Dark Age (Dramatized Adaptation)", "author": None, "part": 1, "part_total": 3}
+        best, score = ab.pick_candidate(g, self.DARK_AGE_CANDS)
+        self.assertIsNotNone(best)
+        self.assertEqual(best["asin"], "P1")
+
+    def test_partless_guess_still_matches(self):
+        g = {"title": "Dark Age (Dramatized Adaptation)", "author": None}
+        best, _ = ab.pick_candidate(g, self.DARK_AGE_CANDS)
+        self.assertIsNotNone(best)
+
+    def test_subtitle_split_from_underscore(self):
+        g = ab.infer_book_guess(
+            "/x/Dark Age (Part 1 of 3) (Dramatized Adaptation)_ Red Rising, Book 5 [B0FF5CWGK6].m4b")
+        self.assertNotIn("Red Rising", g["title"])     # subtitle dropped from the search title
+        self.assertIn("Dramatized Adaptation", g["title"])
+        self.assertEqual(g.get("part"), 1)
+        self.assertEqual(g.get("asin"), "B0FF5CWGK6")
+
+    def test_author_role_filtered(self):
+        meta = {"title": "The Art of War",
+                "authors": ["translation by John Minford", "Sun Tzu"]}
+        self.assertEqual(ab._pick_author(meta), "Sun Tzu")
+        self.assertEqual(ab._pick_author({"authors": ["Pierce Brown"]}), "Pierce Brown")
+        # all-role list still returns something rather than crashing
+        self.assertEqual(ab._pick_author({"authors": ["translation by X"]}), "translation by X")
+
+    def test_search_ladder_strips_parens_on_retry(self):
+        calls = []
+        def fake_search(title, author=None, session=None):
+            calls.append(title)
+            return [] if "(" in title else [{"asin": "A", "title": title, "authors": []}]
+        with mock.patch.object(ab, "audible_search", fake_search):
+            cands = ab._search_ladder({"title": "Dark Age (Dramatized Adaptation)", "author": None})
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(calls[0], "Dark Age (Dramatized Adaptation)")
+        self.assertEqual(calls[1], "Dark Age")
+
+
 class TestImportRouting(unittest.TestCase):
     """The unified plexify-imports folder: audiobook-shaped items route to auto-m4b's intake,
     FLAC stays for the music pass (classification lives in import_folder)."""

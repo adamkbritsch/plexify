@@ -53,6 +53,38 @@ _JUNK_RE = re.compile(
     r"\b(unabridged|abridged|audiobook|m4b|mp3|64k|128k|retail|complete)\b", re.IGNORECASE)
 _YEAR_RE = re.compile(r"\(?(19|20)\d{2}\)?")
 _BRACKET_RE = re.compile(r"\[[^\]]*\]")
+# Audible ASINs are 10 chars starting B0 — rips often embed them: '... [B0FF5CWGK6]'.
+# An embedded ASIN is an EXACT product id → skip searching entirely.
+_ASIN_RE = re.compile(r"\b(B0[A-Z0-9]{8})\b")
+# Multi-part releases (GraphicAudio dramatized adaptations etc.): 'Dark Age (Part 1 of 3)',
+# 'Book - Part 2', 'Pt. 3', '(2 of 3)'. Parts must SORT INTO ONE BOOK: same album folder,
+# per-part track files ordered by track number — never separate per-part "books".
+_PART_RES = (
+    re.compile(r"\(\s*part\s*(\d+)\s*of\s*(\d+)\s*\)", re.IGNORECASE),
+    re.compile(r"\(\s*(\d+)\s*of\s*(\d+)\s*\)"),
+    re.compile(r"[-–—,\s]\s*part\s*(\d+)\b(?:\s*of\s*(\d+))?", re.IGNORECASE),
+    re.compile(r"\bpt\.?\s*(\d+)\b(?:\s*of\s*(\d+))?", re.IGNORECASE),
+)
+
+
+def extract_asin(s: str) -> Optional[str]:
+    m = _ASIN_RE.search(s or "")
+    return m.group(1) if m else None
+
+
+def strip_part_info(s: str) -> tuple:
+    """(name_without_part_marker, part_no|None, part_total|None). Only the part marker is
+    removed — edition qualifiers like '(Dramatized Adaptation)' stay, because they distinguish
+    genuinely different Audible products of the same book."""
+    for rx in _PART_RES:
+        m = rx.search(s or "")
+        if m:
+            part = int(m.group(1))
+            total = int(m.group(2)) if m.lastindex and m.lastindex >= 2 and m.group(2) else None
+            cleaned = (s[:m.start()] + " " + s[m.end():]).strip()
+            cleaned = " ".join(cleaned.split()).strip(" -–—,.")
+            return cleaned, part, total
+    return s or "", None, None
 
 
 def _clean_fragment(s: str) -> str:
@@ -63,29 +95,55 @@ def _clean_fragment(s: str) -> str:
 
 
 def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
-    """{title, author} guess for an untagged m4b. Embedded tags win (auto-m4b copies basic tags
-    from the source mp3s when present); else filename patterns 'Author - Title' /
+    """{title, author, asin?, part?, part_total?} guess for an untagged m4b. An ASIN embedded in
+    the name ('… [B0FF5CWGK6]') and part markers ('(Part 1 of 3)') are extracted FIRST — from
+    the raw name, before cleaning strips the brackets. Embedded tags win for title/author
+    (auto-m4b copies basic tags from the source mp3s); else filename patterns 'Author - Title' /
     'Title (Author)' / bare 'Title'."""
     tags = tags or {}
+    base = os.path.splitext(os.path.basename(path or ""))[0]
+    asin = extract_asin(base) or extract_asin(tags.get("album") or "")
+    departed, part, part_total = strip_part_info(base)
+
+    extra = {}
+    if asin:
+        extra["asin"] = asin
+    if part:
+        extra["part"], extra["part_total"] = part, part_total
+
     t_album = (tags.get("album") or "").strip()
     t_artist = (tags.get("albumartist") or tags.get("artist") or "").strip()
     if t_album:
-        return {"title": _clean_fragment(t_album) or t_album,
-                "author": _clean_fragment(t_artist) or None}
+        alb_clean, alb_part, alb_total = strip_part_info(t_album)
+        if alb_part and "part" not in extra:
+            extra["part"], extra["part_total"] = alb_part, alb_total
+        return {"title": _clean_fragment(alb_clean) or t_album,
+                "author": _clean_fragment(t_artist) or None, **extra}
 
-    base = os.path.splitext(os.path.basename(path or ""))[0]
+    base = departed
+    # 'Title: Subtitle' — rips replace the ':' with '_' ('Dark Age (Dramatized Adaptation)_ Red
+    # Rising, Book 5'). The subtitle makes the Audible search too specific (every term must
+    # match) — search on the main title only.
+    m_sub = re.match(r"^(?P<main>.+?)[_:]\s+(?P<sub>[A-Z].{3,})$", base)
+    if m_sub and len(m_sub.group("main")) >= 4:
+        extra.setdefault("subtitle", _clean_fragment(m_sub.group("sub")))
+        base = m_sub.group("main").strip()
     # 'Title (Author)' — trailing parenthetical that isn't a year
     m = re.match(r"^(?P<title>.+?)\s*\((?P<paren>[^)]+)\)\s*$", base)
     if m and not _YEAR_RE.fullmatch(m.group("paren").strip()):
-        return {"title": _clean_fragment(m.group("title")),
-                "author": _clean_fragment(m.group("paren")) or None}
+        # a trailing edition qualifier is NOT an author — keep it on the title
+        paren = m.group("paren").strip()
+        if not re.search(r"adaptation|edition|version|dramatized|graphicaudio|unabridged|abridged",
+                         paren, re.IGNORECASE):
+            return {"title": _clean_fragment(m.group("title")),
+                    "author": _clean_fragment(paren) or None, **extra}
     # 'Author - Title' (authors are short; long left sides are almost always the title)
     if " - " in base:
         left, _, right = base.partition(" - ")
         left_c, right_c = _clean_fragment(left), _clean_fragment(right)
         if left_c and right_c and len(left_c.split()) <= 4:
-            return {"title": right_c, "author": left_c}
-    return {"title": _clean_fragment(base), "author": None}
+            return {"title": right_c, "author": left_c, **extra}
+    return {"title": _clean_fragment(base), "author": None, **extra}
 
 
 def read_mp4_tags(path: str) -> dict:
@@ -157,9 +215,16 @@ def pick_candidate(guess: dict, candidates: list,
     from rapidfuzz.fuzz import token_set_ratio
     g_title = (guess.get("title") or "").lower()
     g_author = (guess.get("author") or "").lower()
+    g_part = guess.get("part")
     best, best_score = None, -1
     for c in candidates:
-        ts = token_set_ratio(g_title, (c.get("title") or "").lower())
+        c_title_clean, c_part, _ = strip_part_info(c.get("title") or "")
+        # Multi-part releases list every part as its own product with a near-identical
+        # title — the file's part number is the ONLY discriminator. A known-part file must
+        # never match a DIFFERENT part's product (its metadata would carry the wrong part).
+        if g_part and c_part and c_part != g_part:
+            continue
+        ts = token_set_ratio(g_title, (c_title_clean or c.get("title") or "").lower())
         if g_author:
             asc = max((token_set_ratio(g_author, (a or "").lower())
                        for a in (c.get("authors") or [""])), default=0)
@@ -168,11 +233,48 @@ def pick_candidate(guess: dict, candidates: list,
             score = int(0.6 * ts + 0.4 * asc)
         else:
             score = int(ts * 0.9)               # no author signal → discount title-only matches
+        if g_part and c_part == g_part:
+            score = min(100, score + 5)         # exact part agreement is a strong signal
         if score > best_score:
             best, best_score = c, score
     if best is None or best_score < int(min_confidence):
         return None, max(best_score, 0)
     return best, best_score
+
+
+def _search_ladder(guess: dict) -> list:
+    """Audible search with progressive loosening — every query term must match, so an
+    over-specific title (subtitle, edition parentheticals) returns 0. Ladder: full title →
+    title without parentheticals; stop at the first non-empty rung."""
+    title = (guess.get("title") or "").strip()
+    author = guess.get("author")
+    tried = set()
+    rungs = [title, re.sub(r"\([^)]*\)", " ", title).strip()]
+    for q in rungs:
+        q = " ".join(q.split())
+        if not q or q.lower() in tried:
+            continue
+        tried.add(q.lower())
+        cands = audible_search(q, author)
+        if cands:
+            return cands
+    return []
+
+
+_AUTHOR_ROLE_RE = re.compile(
+    r"translat|editor|edited|foreword|introduction|afterword|adapted|adaptation|"
+    r"narrat|full cast|graphicaudio", re.IGNORECASE)
+
+
+def _pick_author(meta: dict) -> str:
+    """First authors[] entry that is an actual author, not a contributor role — Audible
+    editions list entries like 'translation by John Minford', which must never become the
+    library's author folder."""
+    authors = [a for a in (meta.get("authors") or []) if a]
+    for a in authors:
+        if not _AUTHOR_ROLE_RE.search(a):
+            return a
+    return authors[0] if authors else "Unknown"
 
 
 def fetch_audnexus(asin: str, session=None) -> Optional[dict]:
@@ -215,16 +317,17 @@ def build_mp4_tags(meta: dict) -> dict:
     """Audnexus metadata → MP4 tag mapping (seanap's convention: narrator in ©wrt, sort tags
     keep series order)."""
     title = meta.get("title") or "Unknown"
-    author = (meta.get("authors") or ["Unknown"])[0]
+    author = _pick_author(meta)
     narrator = (meta.get("narrators") or [""])[0]
     year = (meta.get("release_date") or "")[:4]
     summary = _strip_html(meta.get("summary") or "")
     series = meta.get("series") or ""
     pos = meta.get("series_position") or ""
     sort_album = f"{series} {pos} - {title}".strip() if series else title
+    part = meta.get("part")
     tags = {
-        "\xa9alb": title,
-        "\xa9nam": title,
+        "\xa9alb": title,                    # all parts share the album → ONE book in Plex
+        "\xa9nam": f"{title} - Part {int(part)}" if part else title,
         "aART": author,
         "\xa9ART": author,
         "\xa9wrt": narrator,
@@ -235,6 +338,8 @@ def build_mp4_tags(meta: dict) -> dict:
         "soaa": author,
         "soar": author,
     }
+    if part:
+        tags["trkn"] = [(int(part), int(meta.get("part_total") or 0))]   # track order = part order
     if year:
         tags["\xa9day"] = year
     if meta.get("asin"):
@@ -254,9 +359,14 @@ def _safe(name: str, default: str = "Unknown") -> str:
 
 
 def dest_for(meta: dict, library_dir: str) -> str:
-    author = _safe((meta.get("authors") or ["Unknown"])[0], "Unknown Author")
+    """Author/Title/Title.m4b — and for multi-part releases, Author/Title/Title - Part NN.m4b:
+    every part of a book lands in the SAME album folder (one Plex album, parts as tracks),
+    however far apart the parts were dropped."""
+    author = _safe(_pick_author(meta), "Unknown Author")
     title = _safe(meta.get("title") or "Unknown", "Unknown Title")
-    return os.path.join(library_dir, author, title, f"{title}.m4b")
+    part = meta.get("part")
+    fname = f"{title} - Part {int(part):02d}.m4b" if part else f"{title}.m4b"
+    return os.path.join(library_dir, author, title, fname)
 
 
 def apply_tags(m4b_path: str, meta: dict, cover_bytes: Optional[bytes] = None) -> None:
@@ -267,6 +377,8 @@ def apply_tags(m4b_path: str, meta: dict, cover_bytes: Optional[bytes] = None) -
     for key, val in build_mp4_tags(meta).items():
         if key.startswith("----"):
             f[key] = [MP4FreeForm(str(val).encode("utf-8"))]
+        elif isinstance(val, list):          # pre-shaped values (trkn = [(part, total)])
+            f[key] = val
         else:
             f[key] = [val]
     if cover_bytes:
@@ -349,6 +461,21 @@ def _settled(path: str, size_memo: Optional[dict] = None) -> bool:
 # ── the pass ───────────────────────────────────────────────────────────────────────────────────
 
 _PASS_LOCK = threading.Lock()
+
+
+def _apply_part_info(meta: dict, guess: dict) -> None:
+    """Normalize multi-part releases so all parts sort into ONE book. The Audnexus title for a
+    part product carries its own marker ('Dark Age (Part 1 of 3) (Dramatized Adaptation)') —
+    strip it into part/part_total on the meta, preferring explicit numbers from the file name.
+    The remaining title (edition qualifiers intact) becomes the shared album/book title."""
+    m_clean, m_part, m_total = strip_part_info(meta.get("title") or "")
+    part = guess.get("part") or m_part
+    total = guess.get("part_total") or m_total
+    if m_part and m_clean:
+        meta["title"] = m_clean
+    if part:
+        meta["part"] = part
+        meta["part_total"] = total
 
 
 def _iter_untagged(untagged: str) -> list:
@@ -448,24 +575,31 @@ def organize_pass(temp_dir: str, library_dir: str,
                 continue
             try:
                 guess = infer_book_guess(path, read_mp4_tags(path))
-                candidates = audible_search(guess.get("title") or "", guess.get("author"))
-                best, score = pick_candidate(guess, candidates, min_confidence)
-                if best is None:
-                    _park_for_review(path, review_dir, guess, candidates, score,
-                                     "low_confidence" if candidates else "no_candidates")
-                    _cleanup_book_dir(container_dir)
-                    out["review"] += 1
-                    continue
-                meta = fetch_audnexus(best["asin"])
+                meta, score, candidates = None, 0, []
+                if guess.get("asin"):
+                    # An embedded ASIN is an exact product id — no search needed.
+                    meta = fetch_audnexus(guess["asin"])
+                    score = 100
+                if not meta:
+                    candidates = _search_ladder(guess)
+                    best, score = pick_candidate(guess, candidates, min_confidence)
+                    if best is None:
+                        _park_for_review(path, review_dir, guess, candidates, score,
+                                         "low_confidence" if candidates else "no_candidates")
+                        _cleanup_book_dir(container_dir)
+                        out["review"] += 1
+                        continue
+                    meta = fetch_audnexus(best["asin"])
                 if not meta or not meta.get("title"):
                     _park_for_review(path, review_dir, guess, candidates, score, "audnexus_failed")
                     _cleanup_book_dir(container_dir)
                     out["review"] += 1
                     continue
+                _apply_part_info(meta, guess)
                 dest = _tag_and_file(path, meta, library_dir)
                 _cleanup_book_dir(container_dir)
                 _log_book({"status": "organized", "file": fn, "title": meta["title"],
-                           "author": (meta.get("authors") or ["?"])[0],
+                           "author": _pick_author(meta),
                            "asin": meta.get("asin"), "cover_url": meta.get("image"),
                            "score": score, "dest": dest})
                 out["organized"] += 1
@@ -510,9 +644,10 @@ def resolve_book(file_name: str, review_dir: str, library_dir: str,
                     "genres": ["Audiobook"], "series": "", "series_position": ""}
         else:
             return {"ok": False, "error": "need asin, or author + title"}
+        _apply_part_info(meta, infer_book_guess(safe_name))
         dest = _tag_and_file(path, meta, library_dir)
         _log_book({"status": "organized", "file": safe_name, "title": meta["title"],
-                   "author": (meta.get("authors") or ["?"])[0], "asin": meta.get("asin"),
+                   "author": _pick_author(meta), "asin": meta.get("asin"),
                    "cover_url": meta.get("image"), "score": 100, "dest": dest,
                    "resolved": "manual"})
         return {"ok": True, "dest": dest, "title": meta["title"]}

@@ -173,6 +173,35 @@ class TestSettled(unittest.TestCase):
             self.assertFalse(ab._settled(p, memo))       # size changed between passes
 
 
+class TestIterUntagged(unittest.TestCase):
+    def test_folder_and_bare_layouts(self):
+        # auto-m4b puts each book in a FOLDER (observed live: untagged/<Book>/<Book>.m4b
+        # + .chapters.txt); bare top-level m4bs must also be found.
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, "Sun Tzu - The Art of War"))
+            open(os.path.join(td, "Sun Tzu - The Art of War", "Sun Tzu - The Art of War.m4b"), "wb").close()
+            open(os.path.join(td, "Sun Tzu - The Art of War", "Sun Tzu - The Art of War.chapters.txt"), "wb").close()
+            open(os.path.join(td, "bare book.m4b"), "wb").close()
+            os.makedirs(os.path.join(td, "empty folder"))
+            found = ab._iter_untagged(td)
+        paths = sorted(p for p, _ in found)
+        self.assertEqual(len(found), 2)
+        self.assertTrue(paths[0].endswith("Sun Tzu - The Art of War.m4b"))
+        self.assertTrue(paths[1].endswith("bare book.m4b"))
+        containers = {os.path.basename(p): c for p, c in found}
+        self.assertIsNone(containers["bare book.m4b"])
+        self.assertTrue(containers["Sun Tzu - The Art of War.m4b"].endswith("Sun Tzu - The Art of War"))
+
+    def test_cleanup_book_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = os.path.join(td, "Book")
+            os.makedirs(d)
+            open(os.path.join(d, "Book.chapters.txt"), "wb").close()
+            ab._cleanup_book_dir(d)
+            self.assertFalse(os.path.exists(d))     # sidecar removed + emptied dir dropped
+            ab._cleanup_book_dir(None)              # no-op, no raise
+
+
 class TestLedger(unittest.TestCase):
     def test_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:

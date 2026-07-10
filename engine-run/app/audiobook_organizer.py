@@ -351,6 +351,49 @@ def _settled(path: str, size_memo: Optional[dict] = None) -> bool:
 _PASS_LOCK = threading.Lock()
 
 
+def _iter_untagged(untagged: str) -> list:
+    """(m4b_path, container_dir|None) for every book in untagged/. auto-m4b 'puts the m4b into
+    a folder' (observed live: untagged/<Book>/<Book>.m4b + a .chapters.txt sidecar), so books are
+    one level DOWN; bare top-level .m4b files are handled too for robustness."""
+    out = []
+    try:
+        entries = sorted(os.listdir(untagged))
+    except OSError:
+        return out
+    for name in entries:
+        if name.startswith("."):
+            continue
+        p = os.path.join(untagged, name)
+        if name.lower().endswith(".m4b") and os.path.isfile(p):
+            out.append((p, None))
+        elif os.path.isdir(p):
+            try:
+                for fn in sorted(os.listdir(p)):
+                    if fn.lower().endswith(".m4b") and not fn.startswith("."):
+                        out.append((os.path.join(p, fn), p))
+            except OSError:
+                continue
+    return out
+
+
+def _cleanup_book_dir(container_dir: Optional[str]) -> None:
+    """After the m4b leaves untagged/, drop the leftover sidecars (.chapters.txt — the chapter
+    data is embedded in the m4b) and the emptied folder."""
+    if not container_dir or not os.path.isdir(container_dir):
+        return
+    try:
+        for fn in os.listdir(container_dir):
+            if fn.lower().endswith((".chapters.txt", ".txt", ".jpg", ".png")) or fn.startswith("."):
+                try:
+                    os.remove(os.path.join(container_dir, fn))
+                except OSError:
+                    pass
+        if not os.listdir(container_dir):
+            os.rmdir(container_dir)
+    except OSError:
+        pass
+
+
 def _park_for_review(path: str, review_dir: str, guess: dict,
                      candidates: list, score: int, reason: str) -> None:
     os.makedirs(review_dir, exist_ok=True)
@@ -397,10 +440,8 @@ def organize_pass(temp_dir: str, library_dir: str,
         if not os.path.isdir(untagged):
             out["skipped"] = f"untagged dir missing: {untagged}"
             return out
-        for fn in sorted(os.listdir(untagged)):
-            if not fn.lower().endswith(".m4b") or fn.startswith("."):
-                continue
-            path = os.path.join(untagged, fn)
+        for path, container_dir in _iter_untagged(untagged):
+            fn = os.path.basename(path)
             out["seen"] += 1
             if not _settled(path):
                 out["skipped_unsettled"] += 1
@@ -412,14 +453,17 @@ def organize_pass(temp_dir: str, library_dir: str,
                 if best is None:
                     _park_for_review(path, review_dir, guess, candidates, score,
                                      "low_confidence" if candidates else "no_candidates")
+                    _cleanup_book_dir(container_dir)
                     out["review"] += 1
                     continue
                 meta = fetch_audnexus(best["asin"])
                 if not meta or not meta.get("title"):
                     _park_for_review(path, review_dir, guess, candidates, score, "audnexus_failed")
+                    _cleanup_book_dir(container_dir)
                     out["review"] += 1
                     continue
                 dest = _tag_and_file(path, meta, library_dir)
+                _cleanup_book_dir(container_dir)
                 _log_book({"status": "organized", "file": fn, "title": meta["title"],
                            "author": (meta.get("authors") or ["?"])[0],
                            "asin": meta.get("asin"), "cover_url": meta.get("image"),
@@ -435,6 +479,7 @@ def organize_pass(temp_dir: str, library_dir: str,
                     try:
                         _park_for_review(path, review_dir, {"title": fn}, [], 0,
                                          f"failed_{n}x: {str(e)[:80]}")
+                        _cleanup_book_dir(container_dir)
                         out["review"] += 1
                         _fail_counts.pop(path, None)
                     except Exception:
@@ -504,7 +549,7 @@ def organizer_status(temp_dir: str, library_dir: str,
     return {
         "dropped": _count("recentlyadded"),
         "converting": _count("merge") + _count("fix"),
-        "untagged": _count("untagged", {".m4b"}),
+        "untagged": len(_iter_untagged(os.path.join(temp_dir, "untagged"))),
         "review": _count(None, {".m4b"}),
         "organized_total": organized_total,
         "recent": records,

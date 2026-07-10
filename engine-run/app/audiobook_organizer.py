@@ -925,6 +925,7 @@ def organizer_status(temp_dir: str, library_dir: str,
         "untagged": len(_iter_untagged(os.path.join(temp_dir, "untagged"))),
         "review": _count(None, {".m4b"}),
         "review_items": review_items(review_dir),
+        "converter": converter_status(temp_dir),
         "organized_total": organized_total,
         "recent": records,
         "library_visible": os.path.isdir(library_dir),
@@ -1333,3 +1334,77 @@ def imports_waiting(import_dir: str) -> int:
         n = 0
     _WAITING_CACHE.update(dir=import_dir, ts=now, n=n)
     return n
+
+
+# ── converter (auto-m4b) live progress ─────────────────────────────────────────────────────────
+# Observed m4b-tool mechanics (live, 2026-07-10): auto-m4b moves EVERY pending book into merge/
+# at once and merges ONE book at a time; m4b-tool converts the book's tracks in parallel into
+# untagged/<book>/<book>-tmpfiles/ ('NN-…-finished.m4b' per completed track, '-converting.m4b'
+# in flight), then concatenates them into untagged/<book>/<book>.m4b at the end. So:
+#   • active book  = the merge/ folder whose untagged -tmpfiles dir (or final m4b) exists
+#   • exact progress = finished tracks / source tracks (concat phase reported separately)
+#   • the rest of merge/ is the queue, in the alphabetical order auto-m4b works through
+_CONVERTER_CACHE = {"ts": 0.0, "val": None, "key": ""}
+
+
+def converter_status(temp_dir: str, ttl: float = 20.0) -> dict:
+    """{active: {book, percent, phase, done, files, src_bytes, stalled} | None,
+        queue: [{book, src_bytes, files}]} — cached (the status endpoint polls every few
+    seconds; sizing merge/ walks a dozen folders)."""
+    now = time.time()
+    if (_CONVERTER_CACHE["val"] is not None and _CONVERTER_CACHE["key"] == temp_dir
+            and now - _CONVERTER_CACHE["ts"] < ttl):
+        return _CONVERTER_CACHE["val"]
+    merge = os.path.join(temp_dir, "merge")
+    untagged = os.path.join(temp_dir, "untagged")
+    active, queue = None, []
+    try:
+        names = sorted(n for n in os.listdir(merge)
+                       if not n.startswith(".") and os.path.isdir(os.path.join(merge, n)))
+    except OSError:
+        names = []
+    for name in names:
+        src_bytes = files = 0
+        for dp, dns, fns in os.walk(os.path.join(merge, name)):
+            for fn in fns:
+                if os.path.splitext(fn)[1].lower() in (_CONVERT_EXTS | _READY_EXTS):
+                    try:
+                        src_bytes += os.path.getsize(os.path.join(dp, fn))
+                        files += 1
+                    except OSError:
+                        pass
+        tmp = os.path.join(untagged, name, f"{name}-tmpfiles")
+        final = os.path.join(untagged, name, f"{name}.m4b")
+        has_final = os.path.exists(final)
+        if not os.path.isdir(tmp) and not has_final:
+            queue.append({"book": name, "src_bytes": src_bytes, "files": files})
+            continue
+        done, newest = 0, 0.0
+        try:
+            for fn in os.listdir(tmp):
+                p2 = os.path.join(tmp, fn)
+                try:
+                    newest = max(newest, os.path.getmtime(p2))
+                except OSError:
+                    pass
+                if fn.endswith("-finished.m4b"):
+                    done += 1
+        except OSError:
+            pass
+        if has_final:
+            phase, percent = "assembling", 97
+            try:
+                newest = max(newest, os.path.getmtime(final))
+            except OSError:
+                pass
+        else:
+            phase = "converting"
+            percent = max(1, int(95 * done / files)) if files else 1
+        active = {"book": name, "percent": percent, "phase": phase, "done": done,
+                  "files": files, "src_bytes": src_bytes,
+                  # no artifact touched for 10+ min = the converter is likely wedged;
+                  # the UI can say so instead of lying
+                  "stalled": bool(newest) and (now - newest) > 600}
+    val = {"active": active, "queue": queue}
+    _CONVERTER_CACHE.update(ts=now, val=val, key=temp_dir)
+    return val

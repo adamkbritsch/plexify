@@ -641,5 +641,64 @@ class TestBookRecordsTruthfulness(unittest.TestCase):
             self.assertIn("Parked.m4b", files)      # review records unaffected
 
 
+
+
+class TestConverterStatus(unittest.TestCase):
+    """Mirrors m4b-tool's observed layout: tracks convert in parallel into
+    untagged/<book>/<book>-tmpfiles/ as 'NN-...-finished.m4b', final m4b appears at concat."""
+
+    def _tree(self, d, finished=1):
+        merge = os.path.join(d, "merge"); untagged = os.path.join(d, "untagged")
+        os.makedirs(os.path.join(merge, "Active Book"))
+        os.makedirs(os.path.join(merge, "Queued Book"))
+        tmp = os.path.join(untagged, "Active Book", "Active Book-tmpfiles")
+        os.makedirs(tmp)
+        for i in range(2):
+            with open(os.path.join(merge, "Active Book", f"{i:02d}.mp3"), "wb") as fh:
+                fh.write(b"x" * 1000)
+        with open(os.path.join(merge, "Queued Book", "01.mp3"), "wb") as fh:
+            fh.write(b"x" * 500)
+        for i in range(finished):
+            open(os.path.join(tmp, f"{i:02d}-ch-finished.m4b"), "wb").write(b"y")
+        open(os.path.join(tmp, "99-ch-converting.m4b"), "wb").write(b"y")
+        return tmp
+
+    def test_track_level_progress_and_queue(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, finished=1)
+            st = ab.converter_status(d, ttl=0)
+            a = st["active"]
+            self.assertEqual(a["book"], "Active Book")
+            self.assertEqual((a["done"], a["files"]), (1, 2))
+            self.assertEqual(a["phase"], "converting")
+            self.assertEqual(a["percent"], 47)      # 95 * 1/2
+            self.assertFalse(a["stalled"])
+            self.assertEqual([q["book"] for q in st["queue"]], ["Queued Book"])
+
+    def test_assembly_phase_when_final_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, finished=2)
+            open(os.path.join(d, "untagged", "Active Book", "Active Book.m4b"), "wb").write(b"z")
+            st = ab.converter_status(d, ttl=0)
+            self.assertEqual(st["active"]["phase"], "assembling")
+            self.assertEqual(st["active"]["percent"], 97)
+
+    def test_stalled_flag_on_old_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = self._tree(d, finished=1)
+            t = time.time() - 3600
+            for fn in os.listdir(tmp):
+                os.utime(os.path.join(tmp, fn), (t, t))
+            st = ab.converter_status(d, ttl=0)
+            self.assertTrue(st["active"]["stalled"])
+
+    def test_empty_merge_is_quiet(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "merge")); os.makedirs(os.path.join(d, "untagged"))
+            st = ab.converter_status(d, ttl=0)
+            self.assertIsNone(st["active"])
+            self.assertEqual(st["queue"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

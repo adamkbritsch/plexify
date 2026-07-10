@@ -77,6 +77,58 @@ struct AudiobooksView: View {
                 }
             }.card()
 
+            // Converter live progress (auto-m4b): the active merge + what's waiting behind it
+            if let conv = st?.converter, conv.active != nil || !(conv.queue ?? []).isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Text("Converting now").font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(PX.text)
+                        if let q = conv.queue, !q.isEmpty {
+                            Badge(text: "\(q.count) queued", tint: PX.muted)
+                        }
+                        Spacer()
+                    }
+                    if let a = conv.active {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                Text(a.book ?? "?").font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(PX.text).lineLimit(1)
+                                if a.stalled == true {
+                                    Badge(text: "stalled?", tint: PX.warn)
+                                }
+                                Spacer()
+                                Text(convDetail(a)).font(.system(size: 11)).foregroundStyle(PX.muted)
+                            }
+                            ProgressView(value: Double(a.percent ?? 0), total: 100)
+                                .tint(PX.sp)
+                        }
+                        .inset(padding: 12, radius: PX.controlRadius, fill: PX.bg3, stroke: PX.line)
+                    } else {
+                        Text("Between books — auto-m4b picks up the next one on its minute cycle.")
+                            .font(.system(size: 12)).foregroundStyle(PX.muted)
+                    }
+                    if let q = conv.queue, !q.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("UP NEXT").font(.system(size: 10, weight: .semibold)).tracking(0.6)
+                                .foregroundStyle(PX.muted)
+                            ForEach(Array(q.prefix(6).enumerated()), id: \.offset) { _, b in
+                                HStack(spacing: 8) {
+                                    Text(b.book ?? "?").font(.system(size: 12))
+                                        .foregroundStyle(PX.text2).lineLimit(1)
+                                    Spacer()
+                                    Text(sizeLabel(b.src_bytes)).font(.system(size: 11))
+                                        .foregroundStyle(PX.muted)
+                                }
+                            }
+                            if q.count > 6 {
+                                Text("+ \(q.count - 6) more").font(.system(size: 11))
+                                    .foregroundStyle(PX.muted)
+                            }
+                        }
+                    }
+                }.card()
+            }
+
             // Review queue
             if !reviewItems.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
@@ -156,6 +208,24 @@ struct AudiobooksView: View {
     @ViewBuilder
     private func stageArrow() -> some View {
         Text(verbatim: ">").font(.system(size: 13, weight: .semibold)).foregroundStyle(PX.muted)
+    }
+
+    private func convDetail(_ a: ConvertingBookDTO) -> String {
+        var parts: [String] = []
+        if a.phase == "assembling" {
+            parts.append("assembling the m4b")
+        } else if let d = a.done, let f = a.files {
+            parts.append("\(d)/\(f) tracks")
+        }
+        if let p = a.percent { parts.append("\(p)%") }
+        if let s = a.src_bytes, s > 0 { parts.append(sizeLabel(s)) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func sizeLabel(_ bytes: Int64?) -> String {
+        guard let b = bytes, b > 0 else { return "" }
+        let mb = Double(b) / 1_048_576
+        return mb >= 1024 ? String(format: "%.1f GB", mb / 1024) : String(format: "%.0f MB", mb)
     }
 
     private func openDropFolder() {

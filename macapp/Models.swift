@@ -383,6 +383,21 @@ struct AudiobookDTO: Codable, Identifiable, Hashable {
     var id: String { "\(ts ?? "")-\(file ?? title ?? "")" }
 }
 
+struct ConverterStatusDTO: Codable {
+    var active: ConvertingBookDTO?
+    var queue: [ConvertingBookDTO]?
+}
+
+struct ConvertingBookDTO: Codable {
+    var book: String?
+    var percent: Int?
+    var phase: String?        // converting | assembling
+    var done: Int?            // tracks finished
+    var files: Int?           // tracks total
+    var src_bytes: Int64?
+    var stalled: Bool?
+}
+
 struct AudiobooksStatusDTO: Codable {
     var reachable: Bool?
     var enabled: Bool?           // daemon-side flag
@@ -393,6 +408,7 @@ struct AudiobooksStatusDTO: Codable {
     var untagged: Int?
     var review: Int?
     var review_items: [AudiobookDTO]?   // authoritative queue: review/ folder joined w/ ledger
+    var converter: ConverterStatusDTO?  // auto-m4b live progress (active book + queue)
     var organized_total: Int?
     var recent: [AudiobookDTO]?
     var library_visible: Bool?

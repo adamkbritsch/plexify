@@ -793,6 +793,20 @@ def resolve_book(file_name: str, review_dir: str, library_dir: str,
             meta = {"asin": "", "title": title.strip(), "authors": [author.strip()],
                     "narrators": [], "release_date": "", "summary": "", "image": "",
                     "genres": ["Audiobook"], "series": "", "series_position": ""}
+            # The human's clean author/title often finds the product the raw drop name
+            # couldn't (that's usually why it parked). Borrow the match's COVER, summary and
+            # genres — the user's title/author stay authoritative; without this, manual
+            # resolves shipped with the rip's embedded art (series compilations, wrong book).
+            best, score, _cands, _g = search_and_pick(
+                {"title": title.strip(), "author": author.strip()})
+            if best:
+                rich = fetch_audnexus(best["asin"])
+                if rich:
+                    meta["image"] = rich.get("image") or ""
+                    meta["summary"] = rich.get("summary") or ""
+                    meta["genres"] = rich.get("genres") or meta["genres"]
+                    meta["narrators"] = rich.get("narrators") or []
+                    log.info("manual resolve enriched from %s (score %s)", best["asin"], score)
         else:
             return {"ok": False, "error": "need asin, or author + title"}
         _apply_part_info(meta, infer_book_guess(safe_name))

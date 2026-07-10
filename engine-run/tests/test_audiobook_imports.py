@@ -515,5 +515,50 @@ class TestClobberFixes(unittest.TestCase):
             self.assertTrue(os.path.isfile(src))
 
 
+
+
+class TestManualResolveEnrichment(unittest.TestCase):
+    """Manual review resolves must borrow the matched product's cover/summary while keeping
+    the human's author/title authoritative (they shipped with no cover before)."""
+
+    def test_manual_resolve_fetches_cover_keeps_user_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            review = os.path.join(d, "review"); os.makedirs(review)
+            lib = os.path.join(d, "lib"); os.makedirs(lib)
+            open(os.path.join(review, "Renegat.m4b"), "w").write("x")
+            captured = {}
+            def fake_apply(path, meta, cover=None):
+                captured["meta"] = dict(meta); captured["cover"] = cover
+            with mock.patch.object(ab, "search_and_pick",
+                                   return_value=({"asin": "B0TEST"}, 88, [], {})), \
+                 mock.patch.object(ab, "fetch_audnexus",
+                                   return_value={"asin": "B0TEST", "title": "WRONG PRODUCT TITLE",
+                                                 "authors": ["Wrong Author"], "narrators": ["N"],
+                                                 "summary": "S", "image": "http://img",
+                                                 "genres": ["Sci-Fi"], "series": "",
+                                                 "series_position": "", "release_date": ""}), \
+                 mock.patch.object(ab, "_fetch_cover", return_value=b"IMG"), \
+                 mock.patch.object(ab, "apply_tags", side_effect=fake_apply):
+                res = ab.resolve_book("Renegat.m4b", review, lib,
+                                      author="Orson Scott Card", title="Renegat")
+            self.assertTrue(res["ok"], res)
+            self.assertEqual(captured["meta"]["title"], "Renegat")
+            self.assertEqual(captured["meta"]["authors"], ["Orson Scott Card"])
+            self.assertEqual(captured["meta"]["image"], "http://img")
+            self.assertEqual(captured["cover"], b"IMG")
+
+    def test_manual_resolve_still_works_offline(self):
+        with tempfile.TemporaryDirectory() as d:
+            review = os.path.join(d, "review"); os.makedirs(review)
+            lib = os.path.join(d, "lib"); os.makedirs(lib)
+            open(os.path.join(review, "Obscure.m4b"), "w").write("x")
+            with mock.patch.object(ab, "search_and_pick", return_value=(None, 0, [], {})), \
+                 mock.patch.object(ab, "_fetch_cover", return_value=None), \
+                 mock.patch.object(ab, "apply_tags"):
+                res = ab.resolve_book("Obscure.m4b", review, lib,
+                                      author="Nobody", title="Obscure")
+            self.assertTrue(res["ok"], res)
+
+
 if __name__ == "__main__":
     unittest.main()

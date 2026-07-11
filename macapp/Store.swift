@@ -244,6 +244,29 @@ final class PlexifyStore: ObservableObject {
         await loadAudiobooks()
         return ok
     }
+    @Published var audiobookShelf: [AudiobookShelfItemDTO]?
+    func loadAudiobookShelf() async {
+        struct R: Codable { var items: [AudiobookShelfItemDTO]? }
+        if let d: R = await get("/api/audiobooks/library") { audiobookShelf = d.items ?? [] }
+    }
+    func deleteAudiobook(relDir: String = "", dest: String = "") async -> (Bool, String?) {
+        var body: [String: Any] = [:]
+        if !relDir.isEmpty { body["rel_dir"] = relDir }
+        if !dest.isEmpty { body["dest"] = dest }
+        let (ok, err) = await postJSONChecked("/api/audiobooks/delete", body)
+        if ok {
+            // optimistic removal — the Plex-side cleanup takes ~30s and the shelf cache would
+            // otherwise show the deleted book (with a live trash button) until then
+            audiobookShelf?.removeAll { ($0.rel_dir ?? "") == relDir && !relDir.isEmpty }
+        }
+        await loadAudiobooks()
+        return (ok, err)
+    }
+    func discardAudiobookReview(file: String) async -> (Bool, String?) {
+        let (ok, err) = await postJSONChecked("/api/audiobooks/discard", ["file": file])
+        await loadAudiobooks()
+        return (ok, err)
+    }
     func loadAudiobookSections() async {
         struct R: Codable { var sections: [PlexSectionDTO]? }
         if let d: R = await get("/api/plex/audiobook-sections") { audiobookSections = d.sections ?? [] }
@@ -346,6 +369,22 @@ final class PlexifyStore: ObservableObject {
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do { _ = try await URLSession.shared.data(for: req); return true }
         catch { return false }
+    }
+
+    // Like postJSON, but HONEST: the engine replies 200 with {"ok": false, "error": ...} on
+    // failure, and a bare transport check reports those as success. Returns (ok, error).
+    private func postJSONChecked(_ path: String, _ body: [String: Any]) async -> (Bool, String?) {
+        guard let url = URL(string: base + path) else { return (false, "bad url") }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let ok = (obj?["ok"] as? Bool) ?? false
+            return (ok, ok ? nil : (obj?["error"] as? String ?? "request failed"))
+        } catch { return (false, error.localizedDescription) }
     }
 
     // Form-encoded POST for the engine's request.form endpoints (e.g. fill-balance).

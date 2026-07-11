@@ -64,6 +64,70 @@ def resolve(file: str, asin: str | None = None, author: str | None = None,
         return {"ok": False, "error": str(e)[:200]}
 
 
+_CLEANUP_BUSY = [False]
+
+
+def _cleanup_pending() -> list:
+    from .db import get_config
+    import json as _json
+    try:
+        return _json.loads(get_config("audiobook_cleanup_pending", "[]") or "[]")
+    except ValueError:
+        return []
+
+
+def _set_cleanup_pending(items: list) -> None:
+    from .db import set_config
+    import json as _json
+    set_config("audiobook_cleanup_pending", _json.dumps(items[:20]))
+
+
+def _run_cleanup(rel: str) -> None:
+    """One Plex-cleanup attempt for a deleted book; a missed window stays in the pending
+    list and audiobook_tick keeps retrying (bounded) — one-shot cleanup raced slow scans."""
+    try:
+        from . import plex_client
+        res = plex_client.cleanup_deleted_album(rel)
+        if res.get("cleared"):
+            _set_cleanup_pending([p for p in _cleanup_pending() if p.get("rel") != rel])
+    except Exception:
+        log.exception("plex cleanup after delete failed")
+
+
+def delete_book(rel_dir: str = "", dest: str = "") -> dict:
+    """Soft-delete via the daemon (book folder → in-library trash), then clean the Plex entry
+    up in the background — scan + guarded trash-flag sweep (never media/metadata deletion).
+    The book's rel_dir goes on a pending list so the tick retries until Plex is clean."""
+    try:
+        res = _req("/audiobooks/delete", {"rel_dir": rel_dir, "dest": dest}, timeout=60)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    if res.get("ok"):
+        import threading
+        rel = res.get("rel_dir") or rel_dir            # daemon returns the canonical form
+        if rel:
+            pending = [p for p in _cleanup_pending() if p.get("rel") != rel]
+            pending.append({"rel": rel, "tries": 0})
+            _set_cleanup_pending(pending)
+            def _first(r=rel):
+                if _CLEANUP_BUSY[0]:
+                    return          # a cleanup is running — the tick retry covers this one
+                _CLEANUP_BUSY[0] = True
+                try:
+                    _run_cleanup(r)
+                finally:
+                    _CLEANUP_BUSY[0] = False
+            threading.Thread(target=_first, daemon=True, name="ab-delete-cleanup").start()
+    return res
+
+
+def discard_review(file: str) -> dict:
+    try:
+        return _req("/audiobooks/discard", {"file": file}, timeout=60)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 def audiobook_tick() -> dict:
     """Engine-side glue, safe to call often (status poll / scheduler): push config, read daemon
     status, and when the organized count has grown since the last look, trigger a Plex scan of
@@ -94,7 +158,29 @@ def audiobook_tick() -> dict:
             # matches, duplicate local artists) — flag a reconcile for the FOLLOWING ticks,
             # when the scan has had time to land.
             set_config("audiobook_reconcile_pending", "1")
-        elif (get_config("audiobook_reconcile_pending", "0") or "0") == "1":
+        # retry Plex cleanup for deleted books whose scan/emptyTrash window was missed —
+        # threaded (the cleanup polls the scan for up to 90s; the tick must stay fast),
+        # single-flight, bounded per book: entries clear on success or after 5 tries
+        pending = _cleanup_pending()
+        if pending and not _CLEANUP_BUSY[0]:
+            item = pending[0]
+            if item.get("tries", 0) >= 5:
+                _set_cleanup_pending(pending[1:])
+                log.warning("giving up Plex cleanup for deleted %s after 5 tries", item.get("rel"))
+            else:
+                item["tries"] = item.get("tries", 0) + 1
+                _set_cleanup_pending(pending)
+                _CLEANUP_BUSY[0] = True
+                import threading
+                def _retry(rel=item.get("rel") or ""):
+                    try:
+                        _run_cleanup(rel)
+                    finally:
+                        _CLEANUP_BUSY[0] = False
+                threading.Thread(target=_retry, daemon=True, name="ab-cleanup-retry").start()
+                out["cleanup_retry"] = item.get("rel")
+        if not (total > prev) and \
+                (get_config("audiobook_reconcile_pending", "0") or "0") == "1":
             try:
                 from . import plex_client
                 rec = plex_client.reconcile_audiobook_albums()

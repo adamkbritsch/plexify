@@ -222,6 +222,101 @@ def reconcile_audiobook_albums() -> dict:
     return out
 
 
+def list_audiobook_albums() -> list:
+    """[{key, title, author, rel_dir, tracks}] for every album in the audiobook section.
+    rel_dir is the book folder RELATIVE to the section's library location — exactly what the
+    daemon's soft-delete endpoint takes, so no host-path mapping ever happens client-side."""
+    import os
+    plex = _connect()
+    sec = _audiobook_section(plex) if plex else None
+    if not sec:
+        return []
+    locs = []
+    try:
+        locs = [l.rstrip("/") for l in (sec.locations or []) if l]
+    except Exception:
+        pass
+    out = []
+    try:
+        for alb in sec.albums():
+            rel_dir, n = "", 0
+            try:
+                tracks = alb.tracks()
+                n = len(tracks)
+            except Exception:
+                tracks = []
+            for t in tracks:
+                # per-track guard: one partless/stale track must not blank the whole album
+                try:
+                    f = t.media[0].parts[0].file or ""
+                except (IndexError, AttributeError):
+                    continue
+                for l in locs:
+                    if f.startswith(l + "/"):
+                        rel_dir = os.path.dirname(f)[len(l):].strip("/")
+                        break
+                if rel_dir:
+                    break
+            out.append({"key": alb.ratingKey, "title": alb.title or "",
+                        "author": getattr(alb, "parentTitle", "") or "", "rel_dir": rel_dir,
+                        "tracks": n})
+    except Exception:
+        log.exception("list_audiobook_albums failed")
+    return out
+
+
+def cleanup_deleted_album(rel_dir: str) -> dict:
+    """After a book's files moved to trash: rescan the section and empty Plex's own trash
+    flags — verified live (2026-07-10) to fully remove the album; the Music scanner DOES flag
+    missing albums. Deliberately NEVER calls DELETE /library/metadata: with media deletion
+    enabled that endpoint destroys files (it already destroyed two books today), and this code
+    path must stay incapable of that under ANY server settings.
+
+    Two review-driven guards: the scan is POLLED to completion (a fixed sleep raced slow
+    scans and the emptyTrash no-opped), and emptyTrash is SKIPPED when the scan made several
+    OTHER albums vanish too — that pattern means the mount was flaky mid-scan, and a blanket
+    emptyTrash would purge healthy books' metadata (positions, added-dates). A missed window
+    is retried by audiobook_tick, so returning cleared=False is safe."""
+    out = {"scanned": False, "cleared": False}
+    plex = _connect()
+    sec = _audiobook_section(plex) if plex else None
+    if not sec or not rel_dir:
+        return out
+    try:
+        before = {a["rel_dir"] for a in list_audiobook_albums() if a["rel_dir"]}
+        sec.update()
+        out["scanned"] = True
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            time.sleep(5)
+            try:
+                sec.reload()
+                if not getattr(sec, "refreshing", False):
+                    break
+            except Exception:
+                break
+        after = {a["rel_dir"] for a in list_audiobook_albums() if a["rel_dir"]}
+        others_gone = before - after - {rel_dir}
+        if len(others_gone) > 2:
+            log.warning("skipping emptyTrash: %d unrelated albums vanished during the scan "
+                        "(flaky mount?) — retrying later instead of purging their metadata",
+                        len(others_gone))
+            return out
+        try:
+            sec.emptyTrash()
+        except Exception:
+            pass
+        time.sleep(5)
+        lingering = [a for a in list_audiobook_albums() if a["rel_dir"] == rel_dir]
+        out["cleared"] = not lingering
+        if lingering:
+            log.warning("deleted book still listed in Plex (%s) — audiobook_tick retries; "
+                        "NEVER metadata-deleted by design", rel_dir)
+    except Exception:
+        log.exception("cleanup_deleted_album failed")
+    return out
+
+
 def create_audiobook_section(location: str, name: str = "Audiobooks") -> dict:
     """Create the Audiobooks library (Music type + Audnexus agent + Plex Music Scanner).
     Requires the Audnexus.bundle agent to already be installed and Plex restarted — otherwise

@@ -6,6 +6,10 @@ import AppKit
 // with a review queue for books the matcher wouldn't guess at.
 struct AudiobooksView: View {
     @EnvironmentObject var store: PlexifyStore
+    @State private var pendingDelete: AudiobookShelfItemDTO?
+    @State private var confirmDelete = false
+    @State private var deleteBusy = false
+    @State private var deleteError: String?
 
     private var st: AudiobooksStatusDTO? { store.audiobooks }
     private var reviewItems: [AudiobookDTO] {
@@ -145,6 +149,79 @@ struct AudiobooksView: View {
                 }.card()
             }
 
+            // Library management — every book Plex knows, with soft-delete (folder → trash/,
+            // never unlinked; Plexify NEVER permanently destroys audio)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("LIBRARY").font(.system(size: 11, weight: .semibold)).tracking(0.5)
+                        .foregroundStyle(PX.muted)
+                    Spacer()
+                    if let e = deleteError {
+                        Text(e).font(.system(size: 11)).foregroundStyle(PX.danger).lineLimit(1)
+                    } else {
+                        Text("deleting moves the book to the trash folder on the NAS")
+                            .font(.system(size: 11)).foregroundStyle(PX.muted)
+                    }
+                }
+                .padding(.vertical, 8).padding(.horizontal, 12)
+                .overlay(alignment: .bottom) { Rectangle().fill(PX.lineStrong).frame(height: 1) }
+                let shelf = store.audiobookShelf ?? []
+                if shelf.isEmpty {
+                    Text("No books indexed yet.")
+                        .font(.system(size: 13)).foregroundStyle(PX.muted)
+                        .frame(maxWidth: .infinity).padding(.vertical, 16)
+                } else {
+                    ForEach(shelf) { b in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(b.title ?? "?").font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(PX.text).lineLimit(1)
+                                Text(b.author ?? "").font(.system(size: 12))
+                                    .foregroundStyle(PX.text2).lineLimit(1)
+                            }
+                            Spacer()
+                            if let t = b.tracks, t > 1 {
+                                Text("\(t) parts").font(.system(size: 11)).foregroundStyle(PX.muted)
+                            }
+                            Button {
+                                pendingDelete = b
+                                confirmDelete = true
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(GhostButtonStyle(small: true))
+                            .disabled((b.rel_dir ?? "").isEmpty || deleteBusy)
+                            .help((b.rel_dir ?? "").isEmpty
+                                  ? "No file path known for this entry"
+                                  : "Move this book to the trash folder")
+                        }
+                        .padding(.vertical, 8).padding(.horizontal, 12)
+                        .overlay(alignment: .bottom) { Rectangle().fill(PX.line).frame(height: 1) }
+                    }
+                }
+            }.card(padding: 0)
+            .confirmationDialog(
+                "Delete \"\(pendingDelete?.title ?? "")\"?",
+                isPresented: $confirmDelete,
+                titleVisibility: .visible,
+                presenting: pendingDelete
+            ) { b in
+                // presenting: passes the VALUE into the closures — immune to the
+                // dismissal-order state-nil race of the isPresented-only pattern
+                Button("Move to trash", role: .destructive) {
+                    deleteBusy = true
+                    deleteError = nil
+                    Task {
+                        let (ok, err) = await store.deleteAudiobook(relDir: b.rel_dir ?? "")
+                        if !ok { deleteError = "delete failed: \(err ?? "unknown")" }
+                        deleteBusy = false
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("The book folder moves to the NAS trash folder (recoverable) and the Plex entry is removed. Nothing is permanently deleted.")
+            }
+
             // Recently organized
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
@@ -184,8 +261,12 @@ struct AudiobooksView: View {
         }
         .task {
             // page-local poll while visible
+            await store.loadAudiobookShelf()
+            var n = 0
             while !Task.isCancelled {
                 await store.loadAudiobooks()
+                n += 1
+                if n % 6 == 0 { await store.loadAudiobookShelf() }   // shelf every ~30s
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
@@ -242,6 +323,7 @@ private struct ReviewRow: View {
     @State private var manualTitle = ""
     @State private var busy = false
     @State private var err: String?
+    @State private var confirmDiscard = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -250,9 +332,21 @@ private struct ReviewRow: View {
                 if let r = item.reason { Badge(text: r.replacingOccurrences(of: "_", with: " "), tint: PX.warn) }
                 Spacer()
             }
-            if let g = item.guess, let t = g["title"] {
-                Text("guessed: \(t)\(g["author"].map { " — \($0)" } ?? "")")
-                    .font(.system(size: 11)).foregroundStyle(PX.muted)
+            if let g = item.guess, let t = g["title"], !t.isEmpty {
+                HStack(spacing: 8) {
+                    Text("guessed: \(t)\(g["author"].map { " — \($0)" } ?? "")")
+                        .font(.system(size: 11)).foregroundStyle(PX.muted).lineLimit(1)
+                    Button {
+                        act { await resolveGuess(title: t, author: g["author"] ?? "") }
+                    } label: {
+                        Label("File the guess", systemImage: "checkmark.circle")
+                    }
+                    .buttonStyle(GhostButtonStyle(small: true))
+                    .disabled(busy || (g["author"] ?? "").isEmpty)
+                    .help((g["author"] ?? "").isEmpty
+                          ? "The guess has no author — type one below"
+                          : "File this book as \"\(t)\" by \(g["author"] ?? "")")
+                }
             }
             if let cands = item.candidates, !cands.isEmpty {
                 ForEach(Array(cands.enumerated()), id: \.offset) { _, c in
@@ -282,8 +376,26 @@ private struct ReviewRow: View {
                 Button { act { await resolve(asin: nil) } } label: { Text("File it") }
                     .buttonStyle(GhostButtonStyle(small: true))
                     .disabled(busy || manualAuthor.isEmpty || manualTitle.isEmpty)
+                Spacer()
+                Button { confirmDiscard = true } label: {
+                    Label("Discard", systemImage: "trash")
+                }
+                .buttonStyle(GhostButtonStyle(small: true)).disabled(busy)
+                .help("Don't want this drop? Moves the file to the NAS trash folder.")
                 if busy { ProgressView().scaleEffect(0.5) }
                 if let err { Text(err).font(.system(size: 11)).foregroundStyle(PX.danger).lineLimit(1) }
+            }
+            .confirmationDialog("Discard \"\(item.file ?? "")\"?",
+                                isPresented: $confirmDiscard, titleVisibility: .visible) {
+                Button("Move to trash", role: .destructive) {
+                    act {
+                        let (ok, e) = await store.discardAudiobookReview(file: item.file ?? "")
+                        if !ok { err = "discard failed: \(e ?? "unknown")" }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The file moves to the NAS trash folder — recoverable, never permanently deleted.")
             }
         }
         .inset(padding: 12, radius: PX.controlRadius, fill: PX.bg3, stroke: PX.line)
@@ -298,6 +410,12 @@ private struct ReviewRow: View {
             asin: asin,
             author: asin == nil ? manualAuthor : nil,
             title: asin == nil ? manualTitle : nil)
+        if !ok { err = "resolve failed" }
+    }
+
+    private func resolveGuess(title: String, author: String) async {
+        let ok = await store.resolveAudiobook(file: item.file ?? "",
+                                              author: author, title: title)
         if !ok { err = "resolve failed" }
     }
 }

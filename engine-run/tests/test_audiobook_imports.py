@@ -700,5 +700,90 @@ class TestConverterStatus(unittest.TestCase):
             self.assertEqual(st["queue"], [])
 
 
+
+
+class TestSoftDelete(unittest.TestCase):
+    """UI deletion is ALWAYS a move to trash — never an unlink; trash lives INSIDE the
+    library mount (same-fs atomic rename, shares the library volume's fate)."""
+
+    def _lib(self, d):
+        lib = os.path.join(d, "lib")
+        book = os.path.join(lib, "Pierce Brown", "Red Rising")
+        os.makedirs(book)
+        open(os.path.join(book, "Red Rising.m4b"), "wb").write(b"AUDIO")
+        return lib
+
+    def test_delete_moves_to_in_library_trash(self):
+        with tempfile.TemporaryDirectory() as d:
+            lib = self._lib(d)
+            with mock.patch.object(ab, "DATA_DIR", d):
+                res = ab.delete_book("Pierce Brown/Red Rising", lib)
+            self.assertTrue(res["ok"], res)
+            self.assertEqual(res["rel_dir"], "Pierce Brown/Red Rising")
+            moved = res["trash"]
+            self.assertTrue(moved.startswith(os.path.join(lib, ".plexify-trash")))
+            self.assertEqual(open(os.path.join(moved, "Red Rising.m4b"), "rb").read(), b"AUDIO")
+            self.assertFalse(os.path.exists(os.path.join(lib, "Pierce Brown")))  # emptied author
+
+    def test_delete_by_absolute_dest(self):
+        with tempfile.TemporaryDirectory() as d:
+            lib = self._lib(d)
+            dest = os.path.join(lib, "Pierce Brown", "Red Rising", "Red Rising.m4b")
+            with mock.patch.object(ab, "DATA_DIR", d):
+                res = ab.delete_book("", lib, dest=dest)
+            self.assertTrue(res["ok"], res)
+            self.assertEqual(res["rel_dir"], "Pierce Brown/Red Rising")
+
+    def test_traversal_author_dot_and_trash_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            lib = self._lib(d)
+            with mock.patch.object(ab, "DATA_DIR", d):
+                self.assertFalse(ab.delete_book("../../etc", lib)["ok"])
+                self.assertFalse(ab.delete_book("Pierce Brown", lib)["ok"])
+                self.assertFalse(ab.delete_book("Pierce Brown/.", lib)["ok"])   # '.' bypass
+                self.assertFalse(ab.delete_book(".", lib)["ok"])
+                self.assertFalse(ab.delete_book("", lib)["ok"])
+                self.assertFalse(ab.delete_book("Nobody/Nothing", lib)["ok"])
+                os.makedirs(os.path.join(lib, ".plexify-trash", "x"), exist_ok=True)
+                self.assertFalse(ab.delete_book(".plexify-trash/x", lib)["ok"])
+            self.assertTrue(os.path.isfile(
+                os.path.join(lib, "Pierce Brown", "Red Rising", "Red Rising.m4b")))
+
+    def test_delete_serialized_against_organizer(self):
+        # organize_pass holds _PASS_LOCK while filing — a delete must wait or bail, never race
+        with tempfile.TemporaryDirectory() as d:
+            lib = self._lib(d)
+            self.assertTrue(ab._PASS_LOCK.acquire(blocking=False))
+            try:
+                ab._DELETE_LOCK_TIMEOUT = 0.5
+                import threading
+                result = {}
+                def run():
+                    with mock.patch.object(ab, "DATA_DIR", d):
+                        result["res"] = ab.delete_book("Pierce Brown/Red Rising", lib)
+                t = threading.Thread(target=run)
+                t.start()
+                t.join(timeout=45)          # delete_book waits up to 30s then bails
+                self.assertFalse(t.is_alive())
+                self.assertFalse(result["res"]["ok"])
+                self.assertIn("busy", result["res"]["error"])
+            finally:
+                ab._DELETE_LOCK_TIMEOUT = 30
+                ab._PASS_LOCK.release()
+            self.assertTrue(os.path.isfile(
+                os.path.join(lib, "Pierce Brown", "Red Rising", "Red Rising.m4b")))
+
+    def test_discard_review_moves_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            review = os.path.join(d, "review"); os.makedirs(review)
+            trash = os.path.join(d, "lib", ".plexify-trash")
+            open(os.path.join(review, "Junk.m4b"), "wb").write(b"J")
+            with mock.patch.object(ab, "DATA_DIR", d):
+                res = ab.discard_review("Junk.m4b", review, trash)
+            self.assertTrue(res["ok"], res)
+            self.assertFalse(os.path.exists(os.path.join(review, "Junk.m4b")))
+            self.assertTrue(os.path.isfile(res["trash"]))
+
+
 if __name__ == "__main__":
     unittest.main()

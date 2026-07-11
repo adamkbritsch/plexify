@@ -383,6 +383,15 @@ struct AudiobookDTO: Codable, Identifiable, Hashable {
     var id: String { "\(ts ?? "")-\(file ?? title ?? "")" }
 }
 
+struct AudiobookShelfItemDTO: Codable, Identifiable, Hashable {
+    var key: Int?
+    var title: String?
+    var author: String?
+    var rel_dir: String?
+    var tracks: Int?
+    var id: String { (rel_dir?.isEmpty == false) ? rel_dir! : "key-\(key ?? 0)" }
+}
+
 struct ConverterStatusDTO: Codable {
     var active: ConvertingBookDTO?
     var queue: [ConvertingBookDTO]?

@@ -3819,6 +3819,60 @@ def api_audiobooks_resolve():
     return jsonify(res)
 
 
+_AB_LIB_CACHE = {"items": [], "ts": 0.0}
+_AB_LIB_REFRESHING = [False]
+
+
+@bp.route("/api/audiobooks/library")
+def api_audiobooks_library():
+    """All books in the Plex audiobook section (title/author/rel_dir) — feeds the app's
+    manage-library list. Cached + refreshed off the request path like the status endpoint."""
+    import time as _t, threading as _th
+    from flask import jsonify
+
+    def _refresh():
+        try:
+            from . import plex_client
+            _AB_LIB_CACHE["items"] = plex_client.list_audiobook_albums()
+        except Exception:
+            log.exception("audiobook library refresh failed")
+        finally:
+            _AB_LIB_CACHE["ts"] = _t.time()
+            _AB_LIB_REFRESHING[0] = False
+
+    if _t.time() - _AB_LIB_CACHE["ts"] >= 30 and not _AB_LIB_REFRESHING[0]:
+        _AB_LIB_REFRESHING[0] = True
+        _th.Thread(target=_refresh, daemon=True, name="ab-library").start()
+    return jsonify({"items": _AB_LIB_CACHE["items"]})
+
+
+@bp.route("/api/audiobooks/delete", methods=["POST"])
+def api_audiobooks_delete():
+    """Soft-delete a book: the daemon moves its folder to trash/ (NEVER unlinks), Plex entry
+    cleaned up in the background. The app confirms with the user before calling."""
+    from flask import jsonify, request
+    from . import audiobook_client
+    data = request.get_json(force=True, silent=True) or {}
+    res = audiobook_client.delete_book(rel_dir=str(data.get("rel_dir") or ""),
+                                       dest=str(data.get("dest") or ""))
+    if res.get("ok"):
+        _AB_LIB_CACHE["ts"] = 0.0        # the shelf changed — next poll re-lists
+        _AB_CACHE["ts"] = 0.0
+    return jsonify(res)
+
+
+@bp.route("/api/audiobooks/discard", methods=["POST"])
+def api_audiobooks_discard():
+    """Discard a review-parked file to trash/ — for drops the user doesn't want resolved."""
+    from flask import jsonify, request
+    from . import audiobook_client
+    data = request.get_json(force=True, silent=True) or {}
+    res = audiobook_client.discard_review(str(data.get("file") or ""))
+    if res.get("ok"):
+        _AB_CACHE["ts"] = 0.0
+    return jsonify(res)
+
+
 @bp.route("/api/plex/audiobook-sections")
 def api_plex_audiobook_sections():
     from flask import jsonify

@@ -1408,3 +1408,79 @@ def converter_status(temp_dir: str, ttl: float = 20.0) -> dict:
     val = {"active": active, "queue": queue}
     _CONVERTER_CACHE.update(ts=now, val=val, key=temp_dir)
     return val
+
+
+# ── deletion (soft — always trash, never unlink) ───────────────────────────────────────────────
+# Hard-learned rule (2026-07-10, twice): nothing in this pipeline permanently destroys audio.
+# Deleting from the UI MOVES the book into <library>/.plexify-trash/<stamp>/… — INSIDE the
+# library mount, so the move is one atomic same-filesystem rename (no copy window to race or
+# crash through) and the trash shares the library volume's fate instead of living on the
+# downloads tree (which has a documented self-wipe incident). Plex ignores dot-directories.
+# Emptying the trash is a deliberate manual act outside Plexify.
+
+_DELETE_LOCK_TIMEOUT = 30      # seconds a UI delete waits for an in-flight organize pass
+
+
+def _trash_root(library_dir: str) -> str:
+    return os.path.join(library_dir, ".plexify-trash")
+
+
+def delete_book(rel_dir: str, library_dir: str, trash_root: Optional[str] = None,
+                dest: Optional[str] = None) -> dict:
+    """Soft-delete one book folder from the library. Identified by rel_dir ('Author/Title'
+    relative to the library root) or an absolute dest path under it. The path is fully
+    normalized and containment-checked; exactly one book folder — never an author folder,
+    the root, or the trash. Serialized against organize_pass (the organizer may be filing a
+    new part INTO this folder right now). Returns the canonical rel_dir so callers clean up
+    the right Plex entry."""
+    trash_root = trash_root or _trash_root(library_dir)
+    root = os.path.realpath(library_dir)
+    if dest and not rel_dir:
+        cand = os.path.realpath(dest)
+        if os.path.isfile(cand):
+            cand = os.path.dirname(cand)
+        rel_dir = os.path.relpath(cand, root)
+    rel = os.path.normpath((rel_dir or "").strip().strip("/"))
+    if not rel or rel in (".", "..") or rel.startswith(".." + os.sep) or os.path.isabs(rel):
+        return {"ok": False, "error": "bad path"}
+    src = os.path.realpath(os.path.join(root, rel))
+    if not (src.startswith(root + os.sep) and os.path.isdir(src)):
+        return {"ok": False, "error": "not a book folder in the library"}
+    # validate depth on the RESOLVED path — immune to '.' components and symlink games
+    parts = os.path.relpath(src, root).split(os.sep)
+    if len(parts) != 2 or parts[0] in (".", "..") or parts[0].startswith("."):
+        return {"ok": False, "error": "refusing — pick exactly one book (Author/Title)"}
+    if not _PASS_LOCK.acquire(timeout=_DELETE_LOCK_TIMEOUT):
+        return {"ok": False, "error": "organizer is busy filing books — try again shortly"}
+    try:
+        if not os.path.isdir(src):
+            return {"ok": False, "error": "not a book folder in the library"}
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dst = _free_slot(os.path.join(trash_root, stamp), parts[-1])
+        _move_publish(src, dst)
+        _log_ab_move("audiobook_delete", src, dst)
+        _log_book({"status": "deleted", "file": parts[-1], "title": parts[-1],
+                   "author": parts[-2], "trash": dst})
+        parent = os.path.dirname(src)
+        try:
+            if os.path.realpath(parent) != root and not os.listdir(parent):
+                os.rmdir(parent)               # emptied author folder
+        except OSError:
+            pass
+        return {"ok": True, "trash": dst, "rel_dir": "/".join(parts)}
+    finally:
+        _PASS_LOCK.release()
+
+
+def discard_review(file_name: str, review_dir: str, trash_root: str) -> dict:
+    """Discard a review-parked file the user doesn't want — moved to trash/, never unlinked."""
+    safe = os.path.basename(file_name or "")
+    path = os.path.join(review_dir, safe)
+    if not safe or not os.path.isfile(path):
+        return {"ok": False, "error": "file not found in review folder"}
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dst = _free_slot(os.path.join(trash_root, stamp, "review"), safe)
+    _move_publish(path, dst)
+    _log_ab_move("audiobook_discard", path, dst)
+    _log_book({"status": "discarded", "file": safe, "trash": dst})
+    return {"ok": True, "trash": dst}

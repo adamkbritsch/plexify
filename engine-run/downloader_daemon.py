@@ -486,7 +486,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._send(401, {"error": "unauthorized"})
         if self.path not in ("/enqueue", "/audiobooks/organize-now",
-                             "/audiobooks/config", "/audiobooks/resolve"):
+                             "/audiobooks/config", "/audiobooks/resolve",
+                             "/audiobooks/delete", "/audiobooks/discard"):
             return self._send(404, {"error": "not found"})
         try:
             n = int(self.headers.get("Content-Length", 0))
@@ -543,6 +544,28 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log.exception("audiobooks/resolve failed")
                 return self._send(500, {"ok": False, "error": str(e)[:200]})
+        if self.path == "/audiobooks/delete":
+            try:
+                from app.audiobook_organizer import delete_book, _trash_root
+                res = delete_book(str(body.get("rel_dir") or ""), AUDIOBOOKS_LIBRARY_DIR,
+                                  dest=str(body.get("dest") or "") or None)
+                return self._send(200, res)
+            except Exception as e:
+                log.exception("audiobooks/delete failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
+
+        if self.path == "/audiobooks/discard":
+            fn = str(body.get("file") or "")
+            if not fn or "/" in fn or "\\" in fn or ".." in fn:
+                return self._send(400, {"ok": False, "error": "bad file name"})
+            try:
+                from app.audiobook_organizer import discard_review, _trash_root
+                res = discard_review(fn, AUDIOBOOKS_REVIEW_DIR, _trash_root(AUDIOBOOKS_LIBRARY_DIR))
+                return self._send(200, res)
+            except Exception as e:
+                log.exception("audiobooks/discard failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
+
         if body.get("source") not in ("soulseek", "spotiflac", "squid", "telegram"):
             return self._send(400, {"error": "source must be one of soulseek|spotiflac|squid|telegram"})
         # Apply the engine's forwarded source config (slskd/squid/telegram creds etc.) to this

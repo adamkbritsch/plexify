@@ -99,6 +99,39 @@ class TestPickAudiobookDir(unittest.TestCase):
         responses = [self._resp("p", [(r"b\Project Hail Mary SAMPLE\phm.m4b", 100 * mb)])]
         self.assertIsNone(sg.pick_audiobook_dir(responses, "Project Hail Mary", "", None))
 
+    def test_music_track_with_title_words_rejected(self):
+        # THE live incident: 'Master Alvin' (Orson Scott Card, 1217 min) must NOT match a
+        # Prodigy 'Alvin Risk Remix.m4a' just because 'master'+'alvin' are in the path
+        mb = 1048576
+        responses = [self._resp("CherrySeed", [
+            (r"music\Official Releases (Albums - Master)\The Prodigy - 1997 - The Fat Of The Land\12 - Firestarter (Alvin Risk Remix).m4a", 29 * mb)])]
+        self.assertIsNone(
+            sg.pick_audiobook_dir(responses, "Master Alvin", "Orson Scott Card", 1217))
+
+    def test_lone_m4a_is_music_not_book(self):
+        mb = 1048576
+        responses = [self._resp("p", [(r"x\Some Book\Some Book.m4a", 300 * mb)])]
+        # even sized right and with author, a bare .m4a isn't an audiobook (those are .m4b)
+        self.assertIsNone(sg.pick_audiobook_dir(responses, "Some Book", "", 600))
+
+    def test_impossible_size_for_runtime_rejected(self):
+        mb = 1048576
+        # a 20-hour (1200 min) book cannot be 40 MB
+        responses = [self._resp("p", [(r"b\Long Epic\long.m4b", 40 * mb)])]
+        self.assertIsNone(sg.pick_audiobook_dir(responses, "Long Epic", "Someone", 1200))
+
+    def test_title_only_no_author_no_runtime_rejected(self):
+        mb = 1048576
+        # title words present but nothing corroborates it's the right book -> don't accept
+        responses = [self._resp("p", [(r"stuff\Common Words\Common Words.m4b", 200 * mb)])]
+        self.assertIsNone(sg.pick_audiobook_dir(responses, "Common Words", "", None))
+
+    def test_author_in_path_accepts_without_runtime(self):
+        mb = 1048576
+        responses = [self._resp("p", [(r"Books\Andy Weir\The Martian\The Martian.m4b", 300 * mb)])]
+        best = sg.pick_audiobook_dir(responses, "The Martian", "Andy Weir", None)
+        self.assertIsNotNone(best)
+
 
 class TestWantsStore(unittest.TestCase):
     def setUp(self):
@@ -137,53 +170,183 @@ class TestAcquirePassSearch(unittest.TestCase):
 
     def test_no_result_applies_backoff(self):
         sg.add_want({"asin": "A1", "title": "Obscure Book", "author": "Nobody"})
-        with mock.patch.object(sg, "_slskd_search", return_value=None):
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "_slskd_search", return_value=None):
             out = sg.acquire_pass(self.imports)
         self.assertEqual(out["retried"], 1)
         w = sg.load_wants()[0]
         self.assertEqual(w["attempts"], 1)
         self.assertGreater(w["next_try_at"], time.time())
 
-    def test_hit_enqueues_and_marks_downloading(self):
+    def test_unconfigured_skips_without_burning_retries(self):
+        sg.add_want({"asin": "A1", "title": "Obscure Book"})
+        with mock.patch("app.slskd_client.configured", return_value=False):
+            out = sg.acquire_pass(self.imports)
+        self.assertIn("skipped", out)
+        self.assertEqual(sg.load_wants()[0]["attempts"], 0)   # NOT burned
+
+    def test_hit_enqueues_all_and_marks_downloading(self):
         sg.add_want({"asin": "A1", "title": "Found Book", "author": "Someone"})
         pick = {"peer": "peer1", "dir": "d", "total_mb": 300,
                 "files": [{"filename": "d\\Found Book.m4b", "size": 100}]}
-        fake_slskd = mock.Mock()
-        fake_slskd.enqueue_download.return_value = True
-        with mock.patch.object(sg, "_slskd_search", return_value=pick), \
-             mock.patch.dict("sys.modules", {}), \
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "_slskd_search", return_value=pick), \
              mock.patch("app.slskd_client.enqueue_download", return_value=True), \
              mock.patch("app.slskd_client.get_transfers_for_user", return_value=[]):
             out = sg.acquire_pass(self.imports)
         self.assertEqual(out["started"], 1)
         w = sg.load_wants()[0]
-        self.assertEqual(w["status"], "downloading")
-        self.assertEqual(w["peer"], "peer1")
+        self.assertEqual((w["status"], w["peer"]), ("downloading", "peer1"))
+
+    def test_partial_enqueue_cancels_and_retries(self):
+        sg.add_want({"asin": "A1", "title": "Book", "author": "X"})
+        pick = {"peer": "p", "dir": "d", "total_mb": 100,
+                "files": [{"filename": "d\\a.mp3", "size": 1}, {"filename": "d\\b.mp3", "size": 1}]}
+        cancels = []
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "_slskd_search", return_value=pick), \
+             mock.patch("app.slskd_client.enqueue_download",
+                        side_effect=[True, False]), \
+             mock.patch("app.slskd_client.cancel_downloads",
+                        side_effect=lambda u, f: cancels.append((u, list(f)))), \
+             mock.patch("app.slskd_client.get_transfers_for_user", return_value=[]):
+            out = sg.acquire_pass(self.imports)
+        self.assertEqual(out["retried"], 1)
+        self.assertTrue(cancels)                         # the one accepted file was cancelled
 
     def test_one_search_per_pass(self):
         sg.add_want({"asin": "A1", "title": "Book One"})
         sg.add_want({"asin": "A2", "title": "Book Two"})
-        with mock.patch.object(sg, "_slskd_search", return_value=None) as m:
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "_slskd_search", return_value=None) as m:
             sg.acquire_pass(self.imports)
         self.assertEqual(m.call_count, 1)
 
 
 class TestCollectDelivered(unittest.TestCase):
-    def test_moves_into_one_import_folder(self):
+    def test_moves_all_into_one_folder(self):
         with tempfile.TemporaryDirectory() as d:
-            comp = os.path.join(d, "downloads_music", "complete", "peerdir")
+            comp = os.path.join(d, "complete", "Found Book")   # parent dir matches want's suffix
             os.makedirs(comp)
             open(os.path.join(comp, "01.mp3"), "w").write("x")
             open(os.path.join(comp, "02.mp3"), "w").write("x")
             imports = os.path.join(d, "imports"); os.makedirs(imports)
             want = {"author": "Andy Weir", "title": "Found Book",
-                    "files": ["share\\x\\01.mp3", "share\\x\\02.mp3"]}
-            moved = sg._collect_delivered(want, imports,
-                                          roots=[os.path.join(d, "downloads_music", "complete")])
+                    "files": ["share\\Found Book\\01.mp3", "share\\Found Book\\02.mp3"]}
+            moved = sg._collect_delivered(want, imports, roots=[os.path.join(d, "complete")])
             self.assertEqual(sorted(moved), ["01.mp3", "02.mp3"])
-            book_dir = os.path.join(imports, "Andy Weir - Found Book")
-            self.assertTrue(os.path.isdir(book_dir))
-            self.assertEqual(len(os.listdir(book_dir)), 2)
+            self.assertEqual(len(os.listdir(os.path.join(imports, "Andy Weir - Found Book"))), 2)
+
+    def test_partial_delivery_is_not_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            comp = os.path.join(d, "complete", "Found Book"); os.makedirs(comp)
+            open(os.path.join(comp, "01.mp3"), "w").write("x")   # only 1 of 2 landed
+            imports = os.path.join(d, "imports"); os.makedirs(imports)
+            want = {"title": "Found Book",
+                    "files": ["s\\Found Book\\01.mp3", "s\\Found Book\\02.mp3"]}
+            self.assertEqual(sg._collect_delivered(want, imports,
+                                                   roots=[os.path.join(d, "complete")]), [])
+            self.assertEqual(os.listdir(imports), [])            # nothing moved yet
+
+    def test_generic_name_in_other_book_not_stolen(self):
+        # a different book's '01.mp3' (different parent dir) must NOT be collected
+        with tempfile.TemporaryDirectory() as d:
+            other = os.path.join(d, "complete", "Other Book"); os.makedirs(other)
+            open(os.path.join(other, "01.mp3"), "w").write("OTHER")
+            imports = os.path.join(d, "imports"); os.makedirs(imports)
+            want = {"title": "My Book", "files": ["s\\My Book\\01.mp3"]}
+            self.assertEqual(sg._collect_delivered(want, imports,
+                                                   roots=[os.path.join(d, "complete")]), [])
+            self.assertTrue(os.path.isfile(os.path.join(other, "01.mp3")))   # untouched
+
+
+
+
+class TestSoulseekAvailability(unittest.TestCase):
+    def _dir(self, title):
+        mb = 1048576
+        return [{"username": "p", "queueLength": 0,
+                 "files": [{"filename": f"share\\{title}\\{title}.m4b", "size": 400 * mb}]}]
+
+    def test_on_soulseek_true_when_pick_found(self):
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch("app.slskd_client.search", return_value="sid"), \
+             mock.patch("app.slskd_client.get_search_results",
+                        return_value=self._dir("Project Hail Mary")):
+            self.assertTrue(sg.on_soulseek({"title": "Project Hail Mary", "runtime_min": 970}))
+
+    def test_on_soulseek_false_when_nothing(self):
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch("app.slskd_client.search", return_value="sid"), \
+             mock.patch("app.slskd_client.get_search_results", return_value=[]):
+            self.assertFalse(sg.on_soulseek({"title": "Nonexistent Book"}))
+
+    def test_unconfigured_is_false(self):
+        with mock.patch("app.slskd_client.configured", return_value=False):
+            self.assertFalse(sg.on_soulseek({"title": "X"}))
+
+    def test_filter_keeps_only_available(self):
+        items = [{"asin": "A", "title": "Has It"}, {"asin": "B", "title": "Nope"},
+                 {"asin": "C", "title": "Also Has"}]
+        avail = {"Has It", "Also Has"}
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "_PROBE_GAP_S", 0), \
+             mock.patch.object(sg, "on_soulseek", side_effect=lambda it, *a, **k: it["title"] in avail):
+            out = sg.filter_on_soulseek(items, keep=10)
+        self.assertEqual({i["asin"] for i in out}, {"A", "C"})
+
+    def test_filter_stops_at_keep(self):
+        items = [{"asin": str(i), "title": f"B{i}"} for i in range(10)]
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "_PROBE_GAP_S", 0), \
+             mock.patch.object(sg, "on_soulseek", return_value=True):
+            out = sg.filter_on_soulseek(items, keep=3)
+        self.assertEqual(len(out), 3)
+
+    def test_filter_respects_max_probes(self):
+        # never probe more than max_probes even if fewer than keep are confirmed
+        items = [{"asin": str(i), "title": f"B{i}"} for i in range(30)]
+        calls = []
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "_PROBE_GAP_S", 0), \
+             mock.patch.object(sg, "on_soulseek",
+                               side_effect=lambda it, *a, **k: calls.append(it) or False):
+            sg.filter_on_soulseek(items, keep=15, max_probes=8)
+        self.assertEqual(len(calls), 8)
+
+
+class TestSearchCatalog(unittest.TestCase):
+    def test_short_query_returns_empty(self):
+        self.assertEqual(sg.search_catalog("a"), [])
+
+    def test_search_verifies_each_candidate(self):
+        products = {"products": [
+            {"asin": "S1", "title": "Sci Fi One", "authors": [{"name": "A"}],
+             "runtime_length_min": 600, "language": "english"},
+            {"asin": "S2", "title": "Sci Fi Two", "authors": [{"name": "A"}],
+             "runtime_length_min": 600, "language": "english"}]}
+        with mock.patch.object(sg, "_audible_get", return_value=products), \
+             mock.patch.object(sg, "_PROBE_GAP_S", 0), \
+             mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "on_soulseek",
+                               side_effect=lambda it, *a, **k: it["asin"] == "S1"):
+            out = sg.search_catalog("sci fi", require_soulseek=True)
+        self.assertEqual([c["asin"] for c in out], ["S1"])
+        self.assertEqual(out[0]["reason"], "search result")
+
+    def test_search_shows_owned_but_hides_wanted(self):
+        products = {"products": [
+            {"asin": "OWNED", "title": "Owned Book", "authors": [{"name": "A"}],
+             "runtime_length_min": 600, "language": "english"},
+            {"asin": "WANTED", "title": "Wanted Book", "authors": [{"name": "A"}],
+             "runtime_length_min": 600, "language": "english"}]}
+        with mock.patch.object(sg, "_audible_get", return_value=products), \
+             mock.patch.object(sg, "_PROBE_GAP_S", 0), \
+             mock.patch.object(sg, "load_wants", return_value=[{"asin": "WANTED"}]), \
+             mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "on_soulseek", return_value=True):
+            out = sg.search_catalog("book", require_soulseek=True)
+        self.assertEqual([c["asin"] for c in out], ["OWNED"])   # owned shown, wanted hidden
 
 
 if __name__ == "__main__":

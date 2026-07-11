@@ -476,6 +476,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log.exception("audiobooks/suggestions failed")
                 return self._send(500, {"ok": False, "error": str(e)[:200]})
+        if self.path.split("?")[0] == "/audiobooks/search":
+            try:
+                from urllib.parse import urlparse, parse_qs
+                from app import audiobook_suggestor
+                q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]
+                items = audiobook_suggestor.search_catalog(
+                    q, os.path.join(DATA_DIR, "audiobook_books.jsonl"))
+                return self._send(200, {"ok": True, "items": items})
+            except Exception as e:
+                log.exception("audiobooks/search failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200], "items": []})
         if self.path == "/audiobooks/wanted":
             try:
                 from app import audiobook_suggestor

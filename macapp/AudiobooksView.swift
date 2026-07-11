@@ -12,6 +12,7 @@ struct AudiobooksView: View {
     @State private var deleteError: String?
     @State private var shelfSort = "Recently added"
     private static let shelfSorts = ["Recently added", "Title", "Author", "Most parts"]
+    @State private var bookSearch = ""
 
     private var sortedShelf: [AudiobookShelfItemDTO] {
         let shelf = store.audiobookShelf ?? []
@@ -181,18 +182,46 @@ struct AudiobooksView: View {
                 }.card()
             }
 
-            // Suggested — books like the library's, one click to want them
-            if let sugs = store.audiobookSuggestions, !sugs.isEmpty {
+            // Suggested — books like the library's (+ a search box); everything shown is
+            // confirmed available on Soulseek right now, one click to want it
+            do {
+                let searching = store.audiobookSearchResults != nil
+                let rows = searching ? (store.audiobookSearchResults ?? [])
+                                     : (store.audiobookSuggestions ?? [])
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
-                        Text("Suggested").font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(PX.text)
-                        Badge(text: "\(sugs.count)", tint: PX.muted)
+                        Text(searching ? "Search results" : "Suggested")
+                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(PX.text)
+                        if store.audiobookSearching || store.audiobookSuggestGenerating {
+                            ProgressView().scaleEffect(0.5)
+                        } else {
+                            Badge(text: "\(rows.count)", tint: PX.muted)
+                        }
                         Spacer()
-                        Text("downloads search Soulseek now, then retry for days")
+                        Text("everything here is on Soulseek now")
                             .font(.system(size: 11)).foregroundStyle(PX.muted)
                     }
-                    ForEach(sugs.prefix(12)) { s in
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(PX.muted)
+                            .font(.system(size: 12))
+                        TextField("Search for any audiobook…", text: $bookSearch)
+                            .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(PX.text)
+                            .onSubmit { Task { await store.searchAudiobooks(bookSearch) } }
+                        if !bookSearch.isEmpty {
+                            Button {
+                                bookSearch = ""; store.clearAudiobookSearch()
+                            } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).foregroundStyle(PX.muted)
+                        }
+                    }
+                    .padding(8).background(PX.bg3)
+                    .overlay(RoundedRectangle(cornerRadius: PX.controlRadius)
+                        .strokeBorder(PX.line, lineWidth: 1))
+                    if searching && rows.isEmpty && !store.audiobookSearching {
+                        Text("Nothing on Soulseek for that — try different words.")
+                            .font(.system(size: 12)).foregroundStyle(PX.muted)
+                    }
+                    ForEach(rows.prefix(12)) { s in
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(s.title ?? "?").font(.system(size: 13, weight: .medium))

@@ -3920,6 +3920,14 @@ def api_audiobooks_suggestions():
     return jsonify(_AB_SUGG_CACHE["data"])
 
 
+@bp.route("/api/audiobooks/search")
+def api_audiobooks_search():
+    """Book search for the Suggested card — Soulseek-verified results (slow: probes slskd)."""
+    from flask import jsonify, request
+    from . import audiobook_client
+    return jsonify(audiobook_client.search_books(request.args.get("q", "")))
+
+
 @bp.route("/api/audiobooks/wanted")
 def api_audiobooks_wanted():
     from flask import jsonify

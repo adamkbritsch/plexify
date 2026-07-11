@@ -37,12 +37,19 @@
   <div id="ab-review-list"></div>
 </section>
 
-<section class="card" id="ab-suggest-card" style="display:none">
+<section class="card" id="ab-suggest-card">
   <div class="row" style="align-items:center; gap:10px">
-    <h2 style="margin:0">Suggested</h2>
+    <h2 style="margin:0" id="ab-suggest-title">Suggested</h2>
     <span class="smart-badge" id="ab-suggest-badge"></span>
+    <span class="muted small" id="ab-suggest-gen" style="display:none">finding available books…</span>
     <span style="flex:1"></span>
-    <span class="muted small">downloads search Soulseek now, then retry for days</span>
+    <span class="muted small">everything here is on Soulseek now</span>
+  </div>
+  <div class="row" style="gap:8px; margin:10px 0 4px; align-items:center; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:rgba(255,255,255,0.02)">
+    <span class="muted">🔍</span>
+    <input id="ab-search" placeholder="Search for any audiobook…" autocomplete="off"
+           style="flex:1; background:transparent; border:0; outline:0; color:var(--fg); font-size:13px">
+    <button class="ghost" id="ab-search-clear" style="display:none">clear</button>
   </div>
   <div id="ab-suggest-list"></div>
 </section>
@@ -233,8 +240,6 @@
   }
 
   function renderSuggestions(items){
-    const card = $('ab-suggest-card');
-    card.style.display = items.length ? '' : 'none';
     $('ab-suggest-badge').textContent = items.length;
     $('ab-suggest-list').innerHTML = items.slice(0,12).map(s=>`
       <div class="ab-sug-row">
@@ -265,20 +270,44 @@
       </div>`).join('');
   }
 
+  let searchMode = false, searchTimer = null;
   async function loadSuggestions(){
-    try { renderSuggestions((await (await fetch('/api/audiobooks/suggestions')).json()).items || []); } catch(e){}
+    if (searchMode) return;
+    try {
+      const d = await (await fetch('/api/audiobooks/suggestions')).json();
+      $('ab-suggest-gen').style.display = d.generating ? '' : 'none';
+      $('ab-suggest-title').textContent = 'Suggested';
+      renderSuggestions(d.items || []);
+    } catch(e){}
+  }
+  async function runSearch(q){
+    q = (q||'').trim();
+    if (q.length < 2) { searchMode = false; $('ab-search-clear').style.display='none';
+                        $('ab-suggest-title').textContent='Suggested'; loadSuggestions(); return; }
+    searchMode = true;
+    $('ab-search-clear').style.display = '';
+    $('ab-suggest-title').textContent = 'Search results';
+    $('ab-suggest-gen').style.display = '';
+    $('ab-suggest-gen').textContent = 'searching Soulseek…';
+    try {
+      const d = await (await fetch('/api/audiobooks/search?q=' + encodeURIComponent(q))).json();
+      $('ab-suggest-gen').style.display = 'none';
+      const items = d.items || [];
+      renderSuggestions(items);
+      if (!items.length) $('ab-suggest-list').innerHTML = '<p class="muted small">Nothing on Soulseek for that — try different words.</p>';
+    } catch(e){ $('ab-suggest-gen').style.display='none'; }
   }
   async function loadWanted(){
     try { renderWanted((await (await fetch('/api/audiobooks/wanted')).json()).items || []); } catch(e){}
   }
 
   window.abWant = async (sjson) => {
-    const s = JSON.parse(sjson);
     try {
       const r = await (await fetch('/api/audiobooks/want', {method:'POST', headers:{'Content-Type':'application/json'}, body: sjson})).json();
       if (!r.ok) alert('failed: ' + (r.error||'unknown'));
     } catch(e){ alert('failed'); }
-    loadSuggestions(); loadWanted();
+    if (searchMode) runSearch($('ab-search').value); else loadSuggestions();
+    loadWanted();
   };
   window.abDismiss = async (asin) => {
     try { await fetch('/api/audiobooks/dismiss', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({asin})}); } catch(e){}
@@ -344,6 +373,14 @@
   });
   $('ab-sort').addEventListener('change', renderShelf);
 
+  $('ab-search').addEventListener('input', e=>{
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(()=>runSearch(e.target.value), 450);
+  });
+  $('ab-search-clear').addEventListener('click', ()=>{
+    $('ab-search').value=''; searchMode=false; $('ab-search-clear').style.display='none';
+    loadSuggestions();
+  });
   poll(); loadShelf(); loadSuggestions(); loadWanted();
   setInterval(poll, 5000);
   setInterval(loadShelf, 30000);

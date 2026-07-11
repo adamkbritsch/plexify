@@ -136,6 +136,14 @@ def suggestions(refresh: bool = False) -> dict:
         return {"ok": False, "error": str(e)[:200], "items": []}
 
 
+def search_books(query: str) -> dict:
+    import urllib.parse
+    try:
+        return _req("/audiobooks/search?q=" + urllib.parse.quote(query or ""), timeout=120)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "items": []}
+
+
 def wanted() -> dict:
     try:
         return _req("/audiobooks/wanted", timeout=15)

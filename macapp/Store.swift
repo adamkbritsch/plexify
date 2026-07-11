@@ -282,12 +282,30 @@ final class PlexifyStore: ObservableObject {
         return (ok, err)
     }
     @Published var audiobookSuggestions: [AudiobookSuggestionDTO]?
+    @Published var audiobookSuggestGenerating = false
     @Published var audiobookWanted: [AudiobookWantedDTO]?
+    @Published var audiobookSearchResults: [AudiobookSuggestionDTO]?
+    @Published var audiobookSearching = false
     func loadAudiobookSuggestions(refresh: Bool = false) async {
-        struct R: Codable { var items: [AudiobookSuggestionDTO]? }
+        struct R: Codable { var items: [AudiobookSuggestionDTO]?; var generating: Bool? }
         let path = refresh ? "/api/audiobooks/suggestions?refresh=1" : "/api/audiobooks/suggestions"
-        if let d: R = await get(path) { audiobookSuggestions = d.items ?? [] }
+        if let d: R = await get(path) {
+            audiobookSuggestions = d.items ?? []
+            audiobookSuggestGenerating = d.generating ?? false
+        }
     }
+    func searchAudiobooks(_ query: String) async {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 2 else { audiobookSearchResults = nil; return }
+        audiobookSearching = true
+        struct R: Codable { var items: [AudiobookSuggestionDTO]? }
+        let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+        if let d: R = await get("/api/audiobooks/search?q=\(enc)") {
+            audiobookSearchResults = d.items ?? []
+        }
+        audiobookSearching = false
+    }
+    func clearAudiobookSearch() { audiobookSearchResults = nil }
     func loadAudiobookWanted() async {
         struct R: Codable { var items: [AudiobookWantedDTO]? }
         if let d: R = await get("/api/audiobooks/wanted") { audiobookWanted = d.items ?? [] }
@@ -297,7 +315,10 @@ final class PlexifyStore: ObservableObject {
                                    "author": s.author ?? "", "reason": s.reason ?? ""]
         if let r = s.runtime_min { body["runtime_min"] = r }
         let (ok, err) = await postJSONChecked("/api/audiobooks/want", body)
-        if ok { audiobookSuggestions?.removeAll { $0.id == s.id } }
+        if ok {
+            audiobookSuggestions?.removeAll { $0.id == s.id }
+            audiobookSearchResults?.removeAll { $0.id == s.id }   // drop it from search too
+        }
         await loadAudiobookWanted()
         return (ok, err)
     }

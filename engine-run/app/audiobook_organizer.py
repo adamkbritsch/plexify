@@ -619,6 +619,17 @@ def _log_ab_move(kind: str, src: str, dst: str) -> None:
         log.exception("audiobook move-ledger write failed")
 
 
+def _ui_safe(rec: dict) -> dict:
+    """Feed records cross into the Swift app, whose DTO types guess as string->string —
+    internal non-string values (the alts interpretation list) BROKE the whole status decode
+    and the page showed 'daemon unreachable' + zeros (live 2026-07-10). Strip them here."""
+    rec = dict(rec)
+    g = rec.get("guess")
+    if isinstance(g, dict):
+        rec["guess"] = {k: v for k, v in g.items() if isinstance(v, str)}
+    return rec
+
+
 def book_records(limit: int = 30) -> list:
     """Most-recent-first tail of the books ledger (the UI's recent list + review queue).
     An 'organized' record whose library file has since VANISHED (deleted, moved) is dropped
@@ -635,7 +646,7 @@ def book_records(limit: int = 30) -> list:
             dest = rec.get("dest")
             if rec.get("status") == "organized" and dest and not os.path.exists(dest):
                 continue
-            out.append(rec)
+            out.append(_ui_safe(rec))
         return list(reversed(out))[:limit]
     except FileNotFoundError:
         return []
@@ -932,7 +943,7 @@ def review_items(review_dir: str, limit: int = 50) -> list:
     for n in names[:limit]:
         rec = latest.get(n) or {"status": "review", "file": n, "reason": "unknown",
                                 "guess": {}, "candidates": []}
-        out.append(rec)
+        out.append(_ui_safe(rec))
     return out
 
 

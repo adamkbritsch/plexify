@@ -880,5 +880,27 @@ class TestSeriesStampedRips(unittest.TestCase):
         self.assertIn("The Hunger Games", calls)
 
 
+
+
+class TestUiSafeFeed(unittest.TestCase):
+    def test_alts_never_reach_the_ui_feed(self):
+        # a guess with the internal alts LIST broke the Swift [String:String] decode and the
+        # whole Audiobooks page showed 'unreachable' + zeros
+        with tempfile.TemporaryDirectory() as d:
+            review = os.path.join(d, "review"); os.makedirs(review)
+            open(os.path.join(review, "X.m4b"), "w").write("x")
+            with mock.patch.object(ab, "DATA_DIR", d):
+                with open(os.path.join(d, ab.BOOKS_LEDGER), "w") as fh:
+                    fh.write(json.dumps({"status": "review", "file": "X.m4b",
+                                         "reason": "dest_conflict",
+                                         "guess": {"title": "T", "author": "A",
+                                                   "alts": [{"title": "S"}]}}) + "\n")
+                recs = ab.book_records(30)
+                items = ab.review_items(review)
+            for r in recs + items:
+                for v in (r.get("guess") or {}).values():
+                    self.assertIsInstance(v, str)
+
+
 if __name__ == "__main__":
     unittest.main()

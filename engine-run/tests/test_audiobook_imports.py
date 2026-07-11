@@ -860,6 +860,14 @@ class TestSeriesStampedRips(unittest.TestCase):
                                  "title": "Red Rising Book 05 - Dark Age"})
         self.assertEqual(g["title"], "Dark Age")
 
+    def test_album_embedded_mid_title_derives_clean(self):
+        g = ab.infer_book_guess("6 - Light Bringer.m4b",
+                                {"album": "Red Rising", "artist": "Pierce Brown",
+                                 "albumartist": "Pierce Brown",
+                                 "title": "Light Bringer: Red Rising, Book 6"})
+        self.assertEqual(g["title"], "Light Bringer")
+        self.assertEqual(g["author"], "Pierce Brown")
+
     def test_chapter_junk_track_title_not_used(self):
         # nam='Part 1 - Chapter 1' does NOT contain the album -> album stays primary
         g = ab.infer_book_guess("Book 1 - The Hunger Games.m4b",

@@ -182,8 +182,9 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
         if (t_title and len(t_title) > len(t_album) + 3
                 and t_album.lower() in t_title.lower()):
             remainder = re.sub(re.escape(t_album), " ", t_title, flags=re.IGNORECASE)
-            remainder = re.sub(r"(?i)^[\s\-–—:,]*(?:book\s*\d+(?:\.\d+)?)?[\s\-–—:,]*",
-                               "", remainder.strip())
+            remainder = re.sub(r"(?i)[\s\-–—:,]*\bbook\s*\d+(?:\.\d+)?\b[\s\-–—:,]*",
+                               " ", remainder)
+            remainder = remainder.strip(" \t-–—:,.")
             derived = _clean_fragment(_normalize_name(remainder, camel=False))
             if len(derived) >= 3:
                 tag_guess["alts"] = [{"title": tag_guess["title"],

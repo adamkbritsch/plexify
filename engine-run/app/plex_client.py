@@ -259,7 +259,7 @@ def list_audiobook_albums() -> list:
                     break
             out.append({"key": alb.ratingKey, "title": alb.title or "",
                         "author": getattr(alb, "parentTitle", "") or "", "rel_dir": rel_dir,
-                        "tracks": n})
+                        "tracks": n, "thumb": getattr(alb, "thumb", None) or ""})
     except Exception:
         log.exception("list_audiobook_albums failed")
     return out
@@ -315,6 +315,38 @@ def cleanup_deleted_album(rel_dir: str) -> dict:
     except Exception:
         log.exception("cleanup_deleted_album failed")
     return out
+
+
+_COVER_CACHE: dict = {}
+
+
+def audiobook_cover(key: int) -> Optional[bytes]:
+    """Album art bytes for the app's shelf grid — proxied so the Plex token never leaves the
+    engine. Cached per key for an hour (covers change only on re-match)."""
+    now = time.time()
+    hit = _COVER_CACHE.get(key)
+    if hit and now - hit[0] < 3600:
+        return hit[1]
+    plex = _connect()
+    if not plex:
+        return None
+    try:
+        import requests as _rq
+        from urllib.parse import quote
+        # grid-sized transcode — the originals are 2400x2400 (~0.5MB each; a 60-book shelf
+        # would pull 30MB+)
+        inner = quote(f"/library/metadata/{int(key)}/thumb", safe="")
+        url = (f"{plex._baseurl}/photo/:/transcode?width=320&height=320"
+               f"&minSize=1&upscale=1&url={inner}")
+        r = _rq.get(url, headers={"X-Plex-Token": plex._token}, timeout=10)
+        if r.status_code == 200 and r.content:
+            if len(_COVER_CACHE) > 300:
+                _COVER_CACHE.clear()
+            _COVER_CACHE[key] = (now, r.content)
+            return r.content
+    except Exception:
+        log.warning("audiobook cover fetch failed for %s", key)
+    return None
 
 
 def create_audiobook_section(location: str, name: str = "Audiobooks") -> dict:

@@ -156,12 +156,12 @@ struct AudiobooksView: View {
                 }.card()
             }
 
-            // Library management — every book Plex knows, with soft-delete (folder → trash/,
-            // never unlinked; Plexify NEVER permanently destroys audio)
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("LIBRARY").font(.system(size: 11, weight: .semibold)).tracking(0.5)
-                        .foregroundStyle(PX.muted)
+            // Library — every book Plex knows, as a cover-art shelf; deleting a book is a
+            // soft-delete (folder → trash/, never unlinked; Plexify NEVER destroys audio)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Text("Library").font(.system(size: 15, weight: .semibold)).foregroundStyle(PX.text)
+                    Badge(text: "\((store.audiobookShelf ?? []).count)", tint: PX.muted)
                     Spacer()
                     if let e = deleteError {
                         Text(e).font(.system(size: 11)).foregroundStyle(PX.danger).lineLimit(1)
@@ -170,43 +170,26 @@ struct AudiobooksView: View {
                             .font(.system(size: 11)).foregroundStyle(PX.muted)
                     }
                 }
-                .padding(.vertical, 8).padding(.horizontal, 12)
-                .overlay(alignment: .bottom) { Rectangle().fill(PX.lineStrong).frame(height: 1) }
                 let shelf = store.audiobookShelf ?? []
                 if shelf.isEmpty {
                     Text("No books indexed yet.")
                         .font(.system(size: 13)).foregroundStyle(PX.muted)
-                        .frame(maxWidth: .infinity).padding(.vertical, 16)
+                        .frame(maxWidth: .infinity).padding(.vertical, 20)
                 } else {
-                    ForEach(shelf) { b in
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(b.title ?? "?").font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(PX.text).lineLimit(1)
-                                Text(b.author ?? "").font(.system(size: 12))
-                                    .foregroundStyle(PX.text2).lineLimit(1)
-                            }
-                            Spacer()
-                            if let t = b.tracks, t > 1 {
-                                Text("\(t) parts").font(.system(size: 11)).foregroundStyle(PX.muted)
-                            }
-                            Button {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 142, maximum: 188),
+                                                 spacing: 14, alignment: .top)],
+                              alignment: .leading, spacing: 18) {
+                        ForEach(shelf) { b in
+                            AudiobookShelfCard(book: b,
+                                               coverURL: URL(string: store.base + "/api/audiobooks/cover/\(b.key ?? 0)"),
+                                               disabled: (b.rel_dir ?? "").isEmpty || deleteBusy) {
                                 pendingDelete = b
                                 confirmDelete = true
-                            } label: {
-                                Image(systemName: "trash")
                             }
-                            .buttonStyle(GhostButtonStyle(small: true))
-                            .disabled((b.rel_dir ?? "").isEmpty || deleteBusy)
-                            .help((b.rel_dir ?? "").isEmpty
-                                  ? "No file path known for this entry"
-                                  : "Move this book to the trash folder")
                         }
-                        .padding(.vertical, 8).padding(.horizontal, 12)
-                        .overlay(alignment: .bottom) { Rectangle().fill(PX.line).frame(height: 1) }
                     }
                 }
-            }.card(padding: 0)
+            }.card()
             .confirmationDialog(
                 "Delete \"\(pendingDelete?.title ?? "")\"?",
                 isPresented: $confirmDelete,
@@ -424,5 +407,80 @@ private struct ReviewRow: View {
         let ok = await store.resolveAudiobook(file: item.file ?? "",
                                               author: author, title: title)
         if !ok { err = "resolve failed" }
+    }
+}
+
+
+// One book on the shelf: square cover, title + author, trash on hover.
+private struct AudiobookShelfCard: View {
+    let book: AudiobookShelfItemDTO
+    let coverURL: URL?
+    let disabled: Bool
+    let onDelete: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ZStack(alignment: .topTrailing) {
+                AsyncImage(url: coverURL) { phase in
+                    if let img = phase.image {
+                        img.resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        ZStack {
+                            Rectangle().fill(PX.bg3)
+                            Image(systemName: "book.closed")
+                                .font(.system(size: 30)).foregroundStyle(PX.muted)
+                        }
+                    }
+                }
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: PX.controlRadius))
+                .overlay(RoundedRectangle(cornerRadius: PX.controlRadius)
+                    .strokeBorder(hovering ? PX.lineStrong : PX.line, lineWidth: 1))
+
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(PX.text)
+                        .padding(6)
+                        .background(Circle().fill(Color.black.opacity(0.72)))
+                        .overlay(Circle().strokeBorder(PX.line, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(disabled)
+                .help(disabled && (book.rel_dir ?? "").isEmpty
+                      ? "No file path known for this entry"
+                      : "Move this book to the trash folder")
+                .padding(6)
+                .opacity(hovering ? 1 : 0)
+
+                if let t = book.tracks, t > 1 {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Text("\(t) parts")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(PX.text)
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(Capsule().fill(Color.black.opacity(0.72)))
+                                .overlay(Capsule().strokeBorder(PX.line, lineWidth: 1))
+                            Spacer()
+                        }
+                    }.padding(6)
+                }
+            }
+            Text(book.title ?? "?")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(PX.text).lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(book.author ?? "")
+                .font(.system(size: 11)).foregroundStyle(PX.text2).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
     }
 }

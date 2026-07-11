@@ -3858,6 +3858,18 @@ def api_audiobooks_library():
     return jsonify({"items": _AB_LIB_CACHE["items"]})
 
 
+@bp.route("/api/audiobooks/cover/<int:key>")
+def api_audiobooks_cover(key):
+    """Album art for the shelf grid, proxied from Plex (token stays server-side)."""
+    from flask import Response
+    from . import plex_client
+    data = plex_client.audiobook_cover(key)
+    if not data:
+        return Response(status=404)
+    return Response(data, mimetype="image/jpeg",
+                    headers={"Cache-Control": "max-age=3600"})
+
+
 @bp.route("/api/audiobooks/delete", methods=["POST"])
 def api_audiobooks_delete():
     """Soft-delete a book: the daemon moves its folder to trash/ (NEVER unlinks), Plex entry

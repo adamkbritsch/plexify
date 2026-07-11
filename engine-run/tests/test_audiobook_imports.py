@@ -910,5 +910,45 @@ class TestUiSafeFeed(unittest.TestCase):
                     self.assertIsInstance(v, str)
 
 
+
+
+class TestDurationAwareEditionPick(unittest.TestCase):
+    """Same title + same author, DIFFERENT narrators: the file's duration is the only signal
+    for which edition the audio is; picking blind ships the wrong narrator (user report,
+    2026-07-10)."""
+
+    CANDS = [
+        {"asin": "SHORT", "title": "The Hunger Games", "authors": ["Suzanne Collins"],
+         "narrators": ["Tatiana Maslany"], "runtime_min": 635},
+        {"asin": "LONG", "title": "The Hunger Games", "authors": ["Suzanne Collins"],
+         "narrators": ["Carolyn McCormick"], "runtime_min": 690},
+    ]
+
+    def test_duration_picks_the_matching_edition(self):
+        best, _ = ab.pick_candidate({"title": "The Hunger Games",
+                                     "author": "Suzanne Collins",
+                                     "duration_min": 688}, self.CANDS)
+        self.assertEqual(best["asin"], "LONG")
+        best, _ = ab.pick_candidate({"title": "The Hunger Games",
+                                     "author": "Suzanne Collins",
+                                     "duration_min": 636}, self.CANDS)
+        self.assertEqual(best["asin"], "SHORT")
+
+    def test_no_duration_still_matches(self):
+        best, score = ab.pick_candidate({"title": "The Hunger Games",
+                                         "author": "Suzanne Collins"}, self.CANDS)
+        self.assertIsNotNone(best)
+        self.assertGreaterEqual(score, 80)
+
+    def test_wild_runtime_mismatch_penalized_below_gate(self):
+        cands = [{"asin": "X", "title": "The Hunger Games", "authors": ["Suzanne Collins"],
+                  "narrators": ["Someone"], "runtime_min": 200}]
+        best, score = ab.pick_candidate({"title": "The Hunger Games",
+                                         "author": "Suzanne Collins",
+                                         "duration_min": 688}, cands)
+        # 71% off -> capped penalty pulls it under the default gate
+        self.assertIsNone(best)
+
+
 if __name__ == "__main__":
     unittest.main()

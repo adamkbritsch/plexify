@@ -158,6 +158,8 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
     departed, part, part_total = strip_part_info(base)
 
     extra = {}
+    if tags.get("duration_min"):
+        extra["duration_min"] = tags["duration_min"]   # edition disambiguation (narrators!)
     if asin:
         extra["asin"] = asin
     if part:
@@ -285,8 +287,14 @@ def read_mp4_tags(path: str) -> dict:
         def _first(key):
             v = f.tags.get(key) if f.tags else None
             return str(v[0]) if v else None
+        dur = None
+        try:
+            dur = int(f.info.length / 60)
+        except Exception:
+            pass
         return {"album": _first("\xa9alb"), "artist": _first("\xa9ART"),
-                "albumartist": _first("aART"), "title": _first("\xa9nam")}
+                "albumartist": _first("aART"), "title": _first("\xa9nam"),
+                "duration_min": dur}
     except Exception:
         return {}
 
@@ -304,7 +312,8 @@ def audible_search(title: str, author: Optional[str] = None, session=None) -> li
         time.sleep(wait)
     # response_groups: 'product_desc' carries title/subtitle (product_attrs does NOT — the
     # API returns title:null without it, verified live 2026-07-09), 'contributors' the authors.
-    params = {"num_results": "10", "response_groups": "contributors,product_desc",
+    params = {"num_results": "10",
+              "response_groups": "contributors,product_desc,product_attrs",
               "title": title or ""}
     if author:
         params["author"] = author
@@ -323,6 +332,8 @@ def audible_search(title: str, author: Optional[str] = None, session=None) -> li
                     "title": (p.get("title") or "").strip(),
                     "subtitle": (p.get("subtitle") or "").strip(),
                     "authors": [a.get("name", "") for a in (p.get("authors") or [])],
+                    "narrators": [n.get("name", "") for n in (p.get("narrators") or [])],
+                    "runtime_min": p.get("runtime_length_min"),
                 })
             return [c for c in out if c["asin"] and c["title"]]
         except Exception as e:
@@ -371,12 +382,26 @@ def pick_candidate(guess: dict, candidates: list,
         else:
             score = int(ts * 0.9)               # no author signal → discount title-only matches
         if g_part and c_part == g_part:
-            score = min(100, score + 5)         # exact part agreement is a strong signal
+            score += 5                          # exact part agreement is a strong signal
+        # Edition disambiguation by RUNTIME: same title + same author, different narrator
+        # (Jim Dale vs Stephen Fry, dramatized vs single-voice) — the file's duration is the
+        # only signal for which edition the audio actually is, and picking the wrong one
+        # ships the wrong narrator metadata (user report, 2026-07-10). Within 3% = bonus;
+        # beyond 8% = growing penalty. Scores stay UNCAPPED during comparison so a
+        # closer-runtime edition can win a tie at the ceiling; the cap applies on return.
+        g_dur = guess.get("duration_min")
+        c_rt = c.get("runtime_min")
+        if g_dur and c_rt:
+            diff = abs(c_rt - g_dur) / max(g_dur, 1)
+            if diff <= 0.03:
+                score += 3
+            elif diff > 0.08:
+                score -= min(25, int(diff * 60))
         if score > best_score:
             best, best_score = c, score
     if best is None or best_score < int(min_confidence):
-        return None, max(best_score, 0)
-    return best, best_score
+        return None, max(min(best_score, 100), 0)
+    return best, min(best_score, 100)
 
 
 def _search_ladder(guess: dict) -> list:
@@ -444,12 +469,13 @@ def _pick_author(meta: dict) -> str:
     return authors[0] if authors else "Unknown"
 
 
-def fetch_audnexus(asin: str, session=None) -> Optional[dict]:
+def fetch_audnexus(asin: str, session=None, region: str = "us") -> Optional[dict]:
     """Full book metadata from Audnexus (the same API the Plex agent uses)."""
     import requests as _rq
     session = session or _rq
     try:
-        r = session.get(f"https://api.audnex.us/books/{asin}", timeout=20,
+        r = session.get(f"https://api.audnex.us/books/{asin}"
+                        + (f"?region={region}" if region != "us" else ""), timeout=20,
                         headers={"User-Agent": "Plexify-Audiobooks/1.0"})
         if r.status_code != 200:
             return None
@@ -468,6 +494,7 @@ def fetch_audnexus(asin: str, session=None) -> Optional[dict]:
             "series": series.get("name") or "",
             "series_position": str(series.get("position") or ""),
             "publisher": d.get("publisherName") or "",
+            "runtime_min": d.get("runtimeLengthMin"),
         }
     except Exception as e:
         log.warning("fetch_audnexus(%s) failed: %s", asin, e)

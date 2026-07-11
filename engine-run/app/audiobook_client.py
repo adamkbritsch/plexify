@@ -128,18 +128,20 @@ def discard_review(file: str) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
 
-def suggestions(refresh: bool = False) -> dict:
+def availability(items: list) -> dict:
+    """{asin: bool} — Soulseek availability for a batch of search results (daemon probes in
+    parallel; ~15s). {} on failure so the UI just shows no badges."""
     try:
-        return _req("/audiobooks/suggestions" + ("?refresh=1" if refresh else ""),
-                    timeout=90 if refresh else 20)
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:200], "items": []}
+        res = _req("/audiobooks/availability", {"items": items}, timeout=60)
+        return res.get("results") or {}
+    except Exception:
+        return {}
 
 
 def search_books(query: str) -> dict:
     import urllib.parse
     try:
-        return _req("/audiobooks/search?q=" + urllib.parse.quote(query or ""), timeout=120)
+        return _req("/audiobooks/search?q=" + urllib.parse.quote(query or ""), timeout=30)
     except Exception as e:
         return {"ok": False, "error": str(e)[:200], "items": []}
 

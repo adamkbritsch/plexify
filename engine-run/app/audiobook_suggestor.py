@@ -37,11 +37,9 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
-SUGGESTIONS_FILE = "audiobook_suggestions.json"
 WANTS_FILE = "audiobook_wants.json"
 DISMISSED_FILE = "audiobook_dismissed.json"
 
-_SUGGEST_TTL_S = 24 * 3600
 # attempts -> hours until the next try; past the end = give up (~5 days total)
 _BACKOFF_HOURS = [2, 6, 12, 24, 24, 24, 24]
 _DOWNLOAD_TIMEOUT_S = 45 * 60
@@ -102,20 +100,6 @@ def _product_dict(p: dict) -> Optional[dict]:
     return {"asin": p["asin"], "title": (p.get("title") or "").strip(),
             "author": ((p.get("authors") or [{}])[0].get("name") or "").strip(),
             "runtime_min": p.get("runtime_length_min")}
-
-
-def author_products(author: str, n: int = 25) -> list:
-    d = _audible_get("/1.0/catalog/products",
-                     {"num_results": str(n), "author": author,
-                      "response_groups": _RESPONSE_GROUPS,
-                      "products_sort_by": "-ReleaseDate"})
-    return [x for x in (_product_dict(p) for p in d.get("products") or []) if x]
-
-
-def similar_products(asin: str, n: int = 10) -> list:
-    d = _audible_get(f"/1.0/catalog/products/{asin}/sims",
-                     {"num_results": str(n), "response_groups": _RESPONSE_GROUPS})
-    return [x for x in (_product_dict(p) for p in d.get("similar_products") or []) if x]
 
 
 # ── library snapshot + owned filtering ─────────────────────────────────────────────────────────
@@ -180,138 +164,51 @@ def filter_candidates(candidates: list, owned: list, wants: list, dismissed: lis
     return out
 
 
-def generate_suggestions(books_ledger_path: str, limit: int = 30,
-                         max_authors: int = 8, sims_seeds: int = 10,
-                         require_soulseek: bool = True) -> list:
-    """The suggestor: author gaps first (you clearly like them), then sims ranked by how many
-    owned books point at them. When require_soulseek, only books currently gettable on
-    Soulseek survive (probed in parallel). Best-effort; every API failure just shrinks the list."""
-    owned = library_snapshot(books_ledger_path)
-    if not owned:
-        return []
-    wants = load_wants()
-    dismissed = _load_json(DISMISSED_FILE, [])
-
-    by_author: dict = {}
-    for b in owned:
-        a = (b.get("author") or "").strip()
-        if a:
-            by_author.setdefault(a, []).append(b)
-    top_authors = sorted(by_author, key=lambda a: -len(by_author[a]))[:max_authors]
-
-    author_sugs = []
-    for a in top_authors:
-        cands = filter_candidates(author_products(a), owned, wants, dismissed)
-        for c in cands[:5]:
-            c["reason"] = f"more by {a}"
-            author_sugs.append(c)
-
-    seeds = sorted((b for b in owned if b.get("asin")),
-                   key=lambda b: b.get("ts") or "", reverse=True)[:sims_seeds]
-    votes: dict = {}
-    for b in seeds:
-        for c in similar_products(b["asin"], 8):
-            slot = votes.setdefault(c["asin"], {"item": c, "n": 0, "because": b["title"]})
-            slot["n"] += 1
-    sims = [dict(v["item"]) for v in sorted(votes.values(), key=lambda v: -v["n"])]
-    sims = filter_candidates(sims, owned, wants, dismissed)
-    reason_by_asin = {v["item"]["asin"]: f"because you have {v['because']}"
-                      for v in votes.values()}
-    for c in sims:
-        c["reason"] = reason_by_asin.get(c["asin"], "similar to your library")
-
-    combined, seen = [], set()
-    for c in author_sugs + sims:
-        if c["asin"] not in seen:
-            seen.add(c["asin"])
-            combined.append(c)
-    # Availability gate: build a generous list, then keep only what Soulseek has now. Probe
-    # more than `limit` because many won't be available (translations/obscure editions).
-    if require_soulseek:
-        return filter_on_soulseek(combined, keep=min(limit, 15), max_probes=20)
-    return combined[:limit]
-
-
-_SUGGEST_LOCK = None
-_SUGGEST_STATE = {"generating": False}
-
-
-def _gen_lock():
-    global _SUGGEST_LOCK
-    if _SUGGEST_LOCK is None:
-        import threading
-        _SUGGEST_LOCK = threading.Lock()
-    return _SUGGEST_LOCK
-
-
-def suggestions_cached(books_ledger_path: str, force: bool = False) -> dict:
-    """{ts, items, generating} — the availability-gated build takes MINUTES (a slskd probe per
-    candidate), so it runs in a BACKGROUND thread. Callers get the last good cache immediately
-    plus a `generating` flag; a stale/forced/missing cache kicks off a regen. Single-flight."""
-    cache = _load_json(SUGGESTIONS_FILE, {})
-    fresh = (cache.get("items") is not None
-             and time.time() - (cache.get("ts") or 0) < _SUGGEST_TTL_S)
-    if (force or not fresh) and not _SUGGEST_STATE["generating"]:
-        import threading
-
-        def _run():
-            if not _gen_lock().acquire(blocking=False):
-                return
-            _SUGGEST_STATE["generating"] = True
-            try:
-                items = generate_suggestions(books_ledger_path)
-                _save_json(SUGGESTIONS_FILE, {"ts": time.time(), "items": items})
-            except Exception:
-                log.exception("suggestion generation failed")
-            finally:
-                _SUGGEST_STATE["generating"] = False
-                _gen_lock().release()
-        threading.Thread(target=_run, daemon=True, name="ab-suggest-gen").start()
-    out = dict(cache)
-    out.setdefault("items", [])
-    out["generating"] = _SUGGEST_STATE["generating"]
-    return out
-
-
-_SEARCH_MAX_PROBES = 2        # the user's title is ~always the top hit; keep search ~60s
-_SEARCH_BUDGET_S = 70.0
-
-
-def search_catalog(query: str, books_ledger_path: str = "", limit: int = 6,
-                   require_soulseek: bool = True) -> list:
-    """Book search for the Suggested card's search box: Audible catalog by keyword, then each of
-    the top few candidates is verified against ITS OWN Soulseek search (checking a candidate
-    against a different book's results causes false matches). Bounded to a handful of probes so
-    an interactive search stays reasonable; the top Audible hit is usually the book and confirms
-    in one ~30s probe. Owned books are shown (the user explicitly searched) but already-wanted /
-    dismissed are hidden."""
+def search_catalog(query: str, books_ledger_path: str = "", limit: int = 8) -> list:
+    """Assistive/type-ahead search for the Audiobooks page: Audible catalog by keyword, returned
+    FAST (no Soulseek gate — that would add ~15s and kill the type-ahead feel). Soulseek
+    availability is checked separately/async via `availability()` so results appear the instant
+    you type and each gets a '✓ on Soulseek' badge a moment later. Owned books are shown (the
+    user explicitly searched); already-wanted / dismissed are hidden."""
     query = (query or "").strip()
-    if len(query) < 2:
+    if len(query) < 1:
         return []
     d = _audible_get("/1.0/catalog/products",
-                     {"num_results": str(limit * 2), "keywords": query,
+                     {"num_results": str(max(limit * 2, 12)), "keywords": query,
                       "response_groups": _RESPONSE_GROUPS})
     cands = [x for x in (_product_dict(p) for p in d.get("products") or []) if x]
-    # keep owned (explicit search) but drop what's already wanted or dismissed
     taken = {w.get("asin") for w in load_wants()} | set(_load_json(DISMISSED_FILE, []))
-    cands = [c for c in cands if c["asin"] not in taken]
+    seen, out = set(), []
     for c in cands:
+        if c["asin"] in taken or c["asin"] in seen:
+            continue
+        seen.add(c["asin"])
         c["reason"] = "search result"
-    if not require_soulseek:
-        return cands[:limit]
-
-    from . import slskd_client
-    if not slskd_client.configured():
-        return []
-    out, deadline = [], time.time() + _SEARCH_BUDGET_S
-    for i, c in enumerate(cands[:_SEARCH_MAX_PROBES]):
-        if time.time() > deadline:
-            break
-        if i:
-            time.sleep(_PROBE_GAP_S)
-        if on_soulseek(c):
-            out.append(c)
+        out.append(c)
+    # a title that literally starts with the query floats up ('f' → 'Fahrenheit 451' before
+    # a book that merely contains an f) — assistive-search intuition
+    ql = query.lower()
+    out.sort(key=lambda c: (not (c.get("title") or "").lower().startswith(ql),
+                            not ql in (c.get("title") or "").lower()))
     return out[:limit]
+
+
+def availability(items: list, max_workers: int = 6) -> dict:
+    """{asin: bool} — is each item findable on Soulseek right now? Probed in parallel so the UI
+    can badge results a moment after they appear. Best-effort: slskd down/unconfigured → {}
+    (the UI just shows no badge; Download still queues + retries for days)."""
+    from . import slskd_client
+    items = [i for i in (items or []) if i.get("asin")][:20]
+    if not items or not slskd_client.configured():
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            pairs = list(ex.map(lambda it: (it["asin"], on_soulseek(it)), items))
+    except Exception:
+        log.warning("availability probe failed", exc_info=True)
+        return {}
+    return {a: ok for a, ok in pairs}
 
 
 # ── the wanted list ────────────────────────────────────────────────────────────────────────────
@@ -389,14 +286,11 @@ def remove_want(asin: str, title: str = "") -> dict:
 
 
 def dismiss(asin: str) -> dict:
+    """Hide a book from search results (already-owned false-positives etc.)."""
     d = _load_json(DISMISSED_FILE, [])
     if asin and asin not in d:
         d.append(asin)
         _save_json(DISMISSED_FILE, d[-500:])
-    cache = _load_json(SUGGESTIONS_FILE, {})
-    if cache.get("items"):
-        cache["items"] = [i for i in cache["items"] if i.get("asin") != asin]
-        _save_json(SUGGESTIONS_FILE, cache)
     return {"ok": True}
 
 

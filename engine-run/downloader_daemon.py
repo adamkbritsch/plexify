@@ -426,12 +426,10 @@ def _audiobook_worker():
                                   AUDIOBOOKS_REVIEW_DIR)
                 organize_pass(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
                               _audiobook_min_confidence(), AUDIOBOOKS_REVIEW_DIR)
-                # wanted-list acquisition (soulseek, multi-day retry) + daily suggestions
+                # wanted-list acquisition (soulseek, multi-day retry)
                 from app import audiobook_suggestor
                 if os.path.isdir(AUDIOBOOKS_IMPORT_DIR):
                     audiobook_suggestor.acquire_pass(AUDIOBOOKS_IMPORT_DIR)
-                audiobook_suggestor.suggestions_cached(
-                    os.path.join(DATA_DIR, "audiobook_books.jsonl"))
         except Exception:
             log.exception("audiobook worker pass failed (continuing)")
         time.sleep(60)
@@ -466,16 +464,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "unauthorized"})
         if self.path == "/queue":
             return self._send(200, {"jobs": _all_jobs(), **counts})
-        if self.path.split("?")[0] == "/audiobooks/suggestions":
-            try:
-                from app import audiobook_suggestor
-                cache = audiobook_suggestor.suggestions_cached(
-                    os.path.join(DATA_DIR, "audiobook_books.jsonl"),
-                    force="refresh=1" in self.path)
-                return self._send(200, {"ok": True, **cache})
-            except Exception as e:
-                log.exception("audiobooks/suggestions failed")
-                return self._send(500, {"ok": False, "error": str(e)[:200]})
         if self.path.split("?")[0] == "/audiobooks/search":
             try:
                 from urllib.parse import urlparse, parse_qs
@@ -524,7 +512,7 @@ class Handler(BaseHTTPRequestHandler):
                              "/audiobooks/config", "/audiobooks/resolve",
                              "/audiobooks/delete", "/audiobooks/discard",
                              "/audiobooks/want", "/audiobooks/unwant",
-                             "/audiobooks/dismiss"):
+                             "/audiobooks/dismiss", "/audiobooks/availability"):
             return self._send(404, {"error": "not found"})
         try:
             n = int(self.headers.get("Content-Length", 0))
@@ -610,6 +598,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log.exception("audiobooks/discard failed")
                 return self._send(500, {"ok": False, "error": str(e)[:200]})
+
+        if self.path == "/audiobooks/availability":
+            try:
+                from app import audiobook_suggestor
+                items = body.get("items") if isinstance(body, dict) else None
+                return self._send(200, {"ok": True,
+                                        "results": audiobook_suggestor.availability(items or [])})
+            except Exception as e:
+                log.exception("audiobooks/availability failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200], "results": {}})
 
         if self.path == "/audiobooks/want":
             try:

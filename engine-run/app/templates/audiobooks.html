@@ -39,15 +39,15 @@
 
 <section class="card" id="ab-suggest-card">
   <div class="row" style="align-items:center; gap:10px">
-    <h2 style="margin:0" id="ab-suggest-title">Suggested</h2>
-    <span class="smart-badge" id="ab-suggest-badge"></span>
-    <span class="muted small" id="ab-suggest-gen" style="display:none">finding available books…</span>
+    <h2 style="margin:0">Find audiobooks</h2>
+    <span class="smart-badge" id="ab-suggest-badge" style="display:none"></span>
+    <span class="muted small" id="ab-search-status"></span>
     <span style="flex:1"></span>
-    <span class="muted small">everything here is on Soulseek now</span>
+    <span class="muted small">✓ = available on Soulseek right now</span>
   </div>
   <div class="row" style="gap:8px; margin:10px 0 4px; align-items:center; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:rgba(255,255,255,0.02)">
     <span class="muted">🔍</span>
-    <input id="ab-search" placeholder="Search for any audiobook…" autocomplete="off"
+    <input id="ab-search" placeholder="Start typing a title or author…" autocomplete="off"
            style="flex:1; background:transparent; border:0; outline:0; color:var(--fg); font-size:13px">
     <button class="ghost" id="ab-search-clear" style="display:none">clear</button>
   </div>
@@ -105,6 +105,10 @@
 .ab-author{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ab-sug-row{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-top:8px;background:rgba(255,255,255,0.02)}
 .ab-sug-why{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.ab-avail{font-size:10px;font-weight:600;letter-spacing:.3px;padding:2px 7px;border-radius:999px;white-space:nowrap}
+.ab-avail.ok{color:#3ddc84;border:1px solid rgba(61,220,132,.4)}
+.ab-avail.no{color:var(--muted);border:1px solid var(--line)}
+.ab-avail.chk{color:var(--muted);border:1px solid var(--line);opacity:.7}
 .ab-recent-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
 .ab-recent-row img{width:40px;height:40px;object-fit:cover;border-radius:4px}
 .ab-rev-cands button,.ab-rev-manual button,.ab-rev-row .ghost{background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:4px 10px;font-size:12px;cursor:pointer}
@@ -239,19 +243,32 @@
     return `retry in ${h>0?h+'h ':''}${m}m (try ${(w.attempts||0)+1})`;
   }
 
-  function renderSuggestions(items){
-    $('ab-suggest-badge').textContent = items.length;
+  function availBadge(asin){
+    const st = availMap[asin];
+    if (st === true)  return '<span class="ab-avail ok" title="Available on Soulseek now">✓ Soulseek</span>';
+    if (st === false) return '<span class="ab-avail no" title="Not found on Soulseek right now — Download still queues and retries for days">not found now</span>';
+    return '<span class="ab-avail chk">checking…</span>';
+  }
+  function renderResults(items){
+    const badge = $('ab-suggest-badge');
+    badge.style.display = items.length ? '' : 'none';
+    badge.textContent = items.length;
     $('ab-suggest-list').innerHTML = items.slice(0,12).map(s=>`
-      <div class="ab-sug-row">
+      <div class="ab-sug-row" data-asin="${plxEsc(s.asin||'')}">
         <div style="min-width:0">
           <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${plxEsc(s.title||'?')}</div>
           <div class="muted" style="font-size:12px">${plxEsc(s.author||'')}${s.runtime_min?` · ${Math.floor(s.runtime_min/60)}h ${s.runtime_min%60}m`:''}</div>
         </div>
-        ${s.reason?`<span class="ab-sug-why">${plxEsc(s.reason)}</span>`:''}
         <span style="flex:1"></span>
+        <span class="ab-avail-slot">${availBadge(s.asin)}</span>
         <button class="ghost" onclick='abWant(${JSON.stringify(JSON.stringify(s))})'>${plxIcon('i-arrow-up')} Download</button>
-        <button class="ghost" onclick="abDismiss('${plxEsc(s.asin||'')}')" title="Not interested">${plxIcon('i-x')}</button>
       </div>`).join('');
+  }
+  function paintAvail(){
+    document.querySelectorAll('#ab-suggest-list .ab-sug-row').forEach(row=>{
+      const slot = row.querySelector('.ab-avail-slot');
+      if (slot) slot.innerHTML = availBadge(row.getAttribute('data-asin'));
+    });
   }
 
   function renderWanted(items){
@@ -270,48 +287,46 @@
       </div>`).join('');
   }
 
-  let searchMode = false, searchTimer = null;
-  async function loadSuggestions(){
-    if (searchMode) return;
-    try {
-      const d = await (await fetch('/api/audiobooks/suggestions')).json();
-      $('ab-suggest-gen').style.display = d.generating ? '' : 'none';
-      $('ab-suggest-title').textContent = 'Suggested';
-      renderSuggestions(d.items || []);
-    } catch(e){}
-  }
+  let searchTimer = null, searchSeq = 0, availMap = {}, lastResults = [];
   async function runSearch(q){
     q = (q||'').trim();
-    if (q.length < 2) { searchMode = false; $('ab-search-clear').style.display='none';
-                        $('ab-suggest-title').textContent='Suggested'; loadSuggestions(); return; }
-    searchMode = true;
-    $('ab-search-clear').style.display = '';
-    $('ab-suggest-title').textContent = 'Search results';
-    $('ab-suggest-gen').style.display = '';
-    $('ab-suggest-gen').textContent = 'searching Soulseek…';
+    $('ab-search-clear').style.display = q ? '' : 'none';
+    if (!q) { lastResults = []; $('ab-suggest-badge').style.display='none';
+              $('ab-search-status').textContent=''; $('ab-suggest-list').innerHTML=''; return; }
+    const seq = ++searchSeq;
+    $('ab-search-status').textContent = 'searching…';
+    let items = [];
+    try { items = (await (await fetch('/api/audiobooks/search?q=' + encodeURIComponent(q))).json()).items || []; }
+    catch(e){}
+    if (seq !== searchSeq) return;              // a newer keystroke superseded this
+    $('ab-search-status').textContent = '';
+    lastResults = items;
+    availMap = {};                              // reset badges to 'checking…'
+    renderResults(items);
+    if (!items.length) { $('ab-suggest-list').innerHTML = '<p class="muted small">No matches — try different words.</p>'; return; }
+    // async Soulseek availability → badges update when it returns (~15s)
     try {
-      const d = await (await fetch('/api/audiobooks/search?q=' + encodeURIComponent(q))).json();
-      $('ab-suggest-gen').style.display = 'none';
-      const items = d.items || [];
-      renderSuggestions(items);
-      if (!items.length) $('ab-suggest-list').innerHTML = '<p class="muted small">Nothing on Soulseek for that — try different words.</p>';
-    } catch(e){ $('ab-suggest-gen').style.display='none'; }
+      const res = (await (await fetch('/api/audiobooks/availability', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({items: items.map(i=>({asin:i.asin,title:i.title,author:i.author,runtime_min:i.runtime_min}))})})).json());
+      if (seq !== searchSeq) return;
+      availMap = res || {};
+      paintAvail();
+    } catch(e){}
   }
   async function loadWanted(){
     try { renderWanted((await (await fetch('/api/audiobooks/wanted')).json()).items || []); } catch(e){}
   }
 
   window.abWant = async (sjson) => {
+    const s = JSON.parse(sjson);
     try {
       const r = await (await fetch('/api/audiobooks/want', {method:'POST', headers:{'Content-Type':'application/json'}, body: sjson})).json();
-      if (!r.ok) alert('failed: ' + (r.error||'unknown'));
-    } catch(e){ alert('failed'); }
-    if (searchMode) runSearch($('ab-search').value); else loadSuggestions();
+      if (!r.ok) { alert('failed: ' + (r.error||'unknown')); return; }
+    } catch(e){ alert('failed'); return; }
+    lastResults = lastResults.filter(x=>x.asin !== s.asin);   // drop it from results
+    renderResults(lastResults); paintAvail();
     loadWanted();
-  };
-  window.abDismiss = async (asin) => {
-    try { await fetch('/api/audiobooks/dismiss', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({asin})}); } catch(e){}
-    loadSuggestions();
   };
   window.abUnwant = async (asin, title) => {
     try { await fetch('/api/audiobooks/unwant', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({asin, title: decodeURIComponent(title)})}); } catch(e){}
@@ -375,17 +390,15 @@
 
   $('ab-search').addEventListener('input', e=>{
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(()=>runSearch(e.target.value), 450);
+    searchTimer = setTimeout(()=>runSearch(e.target.value), 250);   // type-ahead debounce
   });
   $('ab-search-clear').addEventListener('click', ()=>{
-    $('ab-search').value=''; searchMode=false; $('ab-search-clear').style.display='none';
-    loadSuggestions();
+    $('ab-search').value=''; runSearch(''); $('ab-search').focus();
   });
-  poll(); loadShelf(); loadSuggestions(); loadWanted();
+  poll(); loadShelf(); loadWanted();
   setInterval(poll, 5000);
   setInterval(loadShelf, 30000);
   setInterval(loadWanted, 15000);
-  setInterval(loadSuggestions, 120000);
 })();
 </script>
 {% endblock %}

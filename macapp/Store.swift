@@ -310,31 +310,39 @@ final class PlexifyStore: ObservableObject {
         await loadAudiobooks()
         return (ok, err)
     }
-    @Published var audiobookSuggestions: [AudiobookSuggestionDTO]?
-    @Published var audiobookSuggestGenerating = false
     @Published var audiobookWanted: [AudiobookWantedDTO]?
-    @Published var audiobookSearchResults: [AudiobookSuggestionDTO]?
+    @Published var audiobookSearchResults: [AudiobookSuggestionDTO]?   // nil = no active search
     @Published var audiobookSearching = false
-    func loadAudiobookSuggestions(refresh: Bool = false) async {
-        struct R: Codable { var items: [AudiobookSuggestionDTO]?; var generating: Bool? }
-        let path = refresh ? "/api/audiobooks/suggestions?refresh=1" : "/api/audiobooks/suggestions"
-        if let d: R = await get(path) {
-            audiobookSuggestions = d.items ?? []
-            audiobookSuggestGenerating = d.generating ?? false
-        }
-    }
+    @Published var audiobookAvailability: [String: Bool] = [:]         // asin -> on Soulseek now
+    private var searchSeq = 0
+
+    // Type-ahead: instant Audible results, then an async Soulseek availability badge per result.
     func searchAudiobooks(_ query: String) async {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 2 else { audiobookSearchResults = nil; return }
+        let seq = { searchSeq += 1; return searchSeq }()
+        guard !q.isEmpty else { audiobookSearchResults = nil; audiobookSearching = false; return }
         audiobookSearching = true
         struct R: Codable { var items: [AudiobookSuggestionDTO]? }
         let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
-        if let d: R = await get("/api/audiobooks/search?q=\(enc)") {
-            audiobookSearchResults = d.items ?? []
-        }
+        let items = (await get("/api/audiobooks/search?q=\(enc)") as R?)?.items ?? []
+        guard seq == searchSeq else { return }        // superseded by a newer keystroke
+        audiobookSearchResults = items
+        audiobookAvailability = [:]                   // badges reset to "checking…"
         audiobookSearching = false
+        guard !items.isEmpty else { return }
+        // async availability probe → badges fill in when it returns (~15s)
+        let body: [String: Any] = ["items": items.map { i -> [String: Any] in
+            var d: [String: Any] = ["asin": i.asin ?? "", "title": i.title ?? "",
+                                    "author": i.author ?? ""]
+            if let r = i.runtime_min { d["runtime_min"] = r }
+            return d
+        }]
+        if let res: [String: Bool] = await postForResult("/api/audiobooks/availability", body),
+           seq == searchSeq {
+            audiobookAvailability = res
+        }
     }
-    func clearAudiobookSearch() { audiobookSearchResults = nil }
+    func clearAudiobookSearch() { audiobookSearchResults = nil; audiobookAvailability = [:] }
     func loadAudiobookWanted() async {
         struct R: Codable { var items: [AudiobookWantedDTO]? }
         if let d: R = await get("/api/audiobooks/wanted") { audiobookWanted = d.items ?? [] }
@@ -344,10 +352,7 @@ final class PlexifyStore: ObservableObject {
                                    "author": s.author ?? "", "reason": s.reason ?? ""]
         if let r = s.runtime_min { body["runtime_min"] = r }
         let (ok, err) = await postJSONChecked("/api/audiobooks/want", body)
-        if ok {
-            audiobookSuggestions?.removeAll { $0.id == s.id }
-            audiobookSearchResults?.removeAll { $0.id == s.id }   // drop it from search too
-        }
+        if ok { audiobookSearchResults?.removeAll { $0.id == s.id } }
         await loadAudiobookWanted()
         return (ok, err)
     }
@@ -356,10 +361,6 @@ final class PlexifyStore: ObservableObject {
                                             ["asin": asin, "title": title])
         await loadAudiobookWanted()
         return ok
-    }
-    func dismissAudiobookSuggestion(asin: String) async {
-        _ = await postJSONChecked("/api/audiobooks/dismiss", ["asin": asin])
-        audiobookSuggestions?.removeAll { $0.asin == asin }
     }
     func loadAudiobookSections() async {
         struct R: Codable { var sections: [PlexSectionDTO]? }
@@ -479,6 +480,19 @@ final class PlexifyStore: ObservableObject {
             let ok = (obj?["ok"] as? Bool) ?? false
             return (ok, ok ? nil : (obj?["error"] as? String ?? "request failed"))
         } catch { return (false, error.localizedDescription) }
+    }
+
+    // POST a JSON body and decode the JSON response (used by the availability probe).
+    private func postForResult<T: Decodable>(_ path: String, _ body: [String: Any]) async -> T? {
+        guard let url = URL(string: base + path) else { return nil }
+        var req = URLRequest(url: url); req.timeoutInterval = 90
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch { return nil }
     }
 
     // Form-encoded POST for the engine's request.form endpoints (e.g. fill-balance).

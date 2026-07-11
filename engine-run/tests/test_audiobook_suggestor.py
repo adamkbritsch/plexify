@@ -316,23 +316,42 @@ class TestSoulseekAvailability(unittest.TestCase):
 
 
 class TestSearchCatalog(unittest.TestCase):
-    def test_short_query_returns_empty(self):
-        self.assertEqual(sg.search_catalog("a"), [])
+    def test_empty_query_returns_empty(self):
+        self.assertEqual(sg.search_catalog(""), [])
 
-    def test_search_verifies_each_candidate(self):
+    def test_single_char_is_allowed(self):
+        # 'type f -> f things show up' — 1-char search must work
+        products = {"products": [
+            {"asin": "F1", "title": "Fahrenheit 451", "authors": [{"name": "Ray Bradbury"}],
+             "runtime_length_min": 300, "language": "english"},
+            {"asin": "X1", "title": "A Book", "authors": [{"name": "Someone"}],
+             "runtime_length_min": 400, "language": "english"}]}
+        with mock.patch.object(sg, "_audible_get", return_value=products):
+            out = sg.search_catalog("f")
+        self.assertIn("F1", [c["asin"] for c in out])
+
+    def test_search_is_fast_no_soulseek_probe(self):
+        # search must NOT touch slskd (availability is a separate call)
         products = {"products": [
             {"asin": "S1", "title": "Sci Fi One", "authors": [{"name": "A"}],
              "runtime_length_min": 600, "language": "english"},
             {"asin": "S2", "title": "Sci Fi Two", "authors": [{"name": "A"}],
              "runtime_length_min": 600, "language": "english"}]}
         with mock.patch.object(sg, "_audible_get", return_value=products), \
-             mock.patch.object(sg, "_PROBE_GAP_S", 0), \
-             mock.patch("app.slskd_client.configured", return_value=True), \
-             mock.patch.object(sg, "on_soulseek",
-                               side_effect=lambda it, *a, **k: it["asin"] == "S1"):
-            out = sg.search_catalog("sci fi", require_soulseek=True)
-        self.assertEqual([c["asin"] for c in out], ["S1"])
+             mock.patch.object(sg, "on_soulseek", side_effect=AssertionError("must not probe")):
+            out = sg.search_catalog("sci fi")
+        self.assertEqual({c["asin"] for c in out}, {"S1", "S2"})
         self.assertEqual(out[0]["reason"], "search result")
+
+    def test_startswith_query_floats_up(self):
+        products = {"products": [
+            {"asin": "MID", "title": "The Fault in Our Stars", "authors": [{"name": "A"}],
+             "runtime_length_min": 400, "language": "english"},
+            {"asin": "PREFIX", "title": "Fault Lines", "authors": [{"name": "B"}],
+             "runtime_length_min": 400, "language": "english"}]}
+        with mock.patch.object(sg, "_audible_get", return_value=products):
+            out = sg.search_catalog("fault")
+        self.assertEqual(out[0]["asin"], "PREFIX")   # title starting with 'fault' ranks first
 
     def test_search_shows_owned_but_hides_wanted(self):
         products = {"products": [
@@ -341,12 +360,32 @@ class TestSearchCatalog(unittest.TestCase):
             {"asin": "WANTED", "title": "Wanted Book", "authors": [{"name": "A"}],
              "runtime_length_min": 600, "language": "english"}]}
         with mock.patch.object(sg, "_audible_get", return_value=products), \
-             mock.patch.object(sg, "_PROBE_GAP_S", 0), \
-             mock.patch.object(sg, "load_wants", return_value=[{"asin": "WANTED"}]), \
-             mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "load_wants", return_value=[{"asin": "WANTED"}]):
+            out = sg.search_catalog("book")
+        self.assertEqual([c["asin"] for c in out], ["OWNED"])
+
+
+class TestAvailability(unittest.TestCase):
+    ITEMS = [{"asin": "A", "title": "Has It"}, {"asin": "B", "title": "Nope"},
+             {"asin": "C", "title": "Also Has"}]
+
+    def test_batch_availability_map(self):
+        avail = {"Has It", "Also Has"}
+        with mock.patch("app.slskd_client.configured", return_value=True), \
+             mock.patch.object(sg, "on_soulseek",
+                               side_effect=lambda it, *a, **k: it["title"] in avail):
+            out = sg.availability(self.ITEMS)
+        self.assertEqual(out, {"A": True, "B": False, "C": True})
+
+    def test_unconfigured_returns_empty(self):
+        with mock.patch("app.slskd_client.configured", return_value=False):
+            self.assertEqual(sg.availability(self.ITEMS), {})
+
+    def test_items_without_asin_skipped(self):
+        with mock.patch("app.slskd_client.configured", return_value=True), \
              mock.patch.object(sg, "on_soulseek", return_value=True):
-            out = sg.search_catalog("book", require_soulseek=True)
-        self.assertEqual([c["asin"] for c in out], ["OWNED"])   # owned shown, wanted hidden
+            out = sg.availability([{"title": "no asin"}, {"asin": "Z", "title": "z"}])
+        self.assertEqual(out, {"Z": True})
 
 
 if __name__ == "__main__":

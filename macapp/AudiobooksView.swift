@@ -13,6 +13,7 @@ struct AudiobooksView: View {
     @State private var shelfSort = "Recently added"
     private static let shelfSorts = ["Recently added", "Title", "Author", "Most parts"]
     @State private var bookSearch = ""
+    @State private var searchTask: Task<Void, Never>?
 
     private var sortedShelf: [AudiobookShelfItemDTO] {
         let shelf = store.audiobookShelf ?? []
@@ -182,31 +183,31 @@ struct AudiobooksView: View {
                 }.card()
             }
 
-            // Suggested — books like the library's (+ a search box); everything shown is
-            // confirmed available on Soulseek right now, one click to want it
+            // Find audiobooks — type-ahead search: instant Audible matches, each with an async
+            // "✓ on Soulseek now" badge; Download queues it (and retries for days if not yet there)
             do {
-                let searching = store.audiobookSearchResults != nil
-                let rows = searching ? (store.audiobookSearchResults ?? [])
-                                     : (store.audiobookSuggestions ?? [])
+                let rows = store.audiobookSearchResults ?? []
+                let active = store.audiobookSearchResults != nil
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
-                        Text(searching ? "Search results" : "Suggested")
-                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(PX.text)
-                        if store.audiobookSearching || store.audiobookSuggestGenerating {
-                            ProgressView().scaleEffect(0.5)
-                        } else {
-                            Badge(text: "\(rows.count)", tint: PX.muted)
-                        }
+                        Text("Find audiobooks").font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(PX.text)
+                        if store.audiobookSearching { ProgressView().scaleEffect(0.5) }
                         Spacer()
-                        Text("everything here is on Soulseek now")
-                            .font(.system(size: 11)).foregroundStyle(PX.muted)
+                        Text("✓ = on Soulseek now").font(.system(size: 11)).foregroundStyle(PX.muted)
                     }
                     HStack(spacing: 8) {
                         Image(systemName: "magnifyingglass").foregroundStyle(PX.muted)
                             .font(.system(size: 12))
-                        TextField("Search for any audiobook…", text: $bookSearch)
+                        TextField("Start typing a title or author…", text: $bookSearch)
                             .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(PX.text)
-                            .onSubmit { Task { await store.searchAudiobooks(bookSearch) } }
+                            .onChange(of: bookSearch) { _, q in
+                                searchTask?.cancel()
+                                searchTask = Task {
+                                    try? await Task.sleep(nanoseconds: 250_000_000)   // debounce
+                                    if !Task.isCancelled { await store.searchAudiobooks(q) }
+                                }
+                            }
                         if !bookSearch.isEmpty {
                             Button {
                                 bookSearch = ""; store.clearAudiobookSearch()
@@ -217,8 +218,8 @@ struct AudiobooksView: View {
                     .padding(8).background(PX.bg3)
                     .overlay(RoundedRectangle(cornerRadius: PX.controlRadius)
                         .strokeBorder(PX.line, lineWidth: 1))
-                    if searching && rows.isEmpty && !store.audiobookSearching {
-                        Text("Nothing on Soulseek for that — try different words.")
+                    if active && rows.isEmpty && !store.audiobookSearching {
+                        Text("No matches — try different words.")
                             .font(.system(size: 12)).foregroundStyle(PX.muted)
                     }
                     ForEach(rows.prefix(12)) { s in
@@ -235,24 +236,13 @@ struct AudiobooksView: View {
                                     }
                                 }
                             }
-                            if let why = s.reason, !why.isEmpty {
-                                Text(why).font(.system(size: 11)).foregroundStyle(PX.muted)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 7).padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.white.opacity(0.05)))
-                            }
                             Spacer()
+                            availabilityBadge(store.audiobookAvailability[s.asin ?? ""])
                             Button {
                                 Task { _ = await store.wantAudiobook(s) }
                             } label: {
                                 Label("Download", systemImage: "arrow.down.circle")
                             }.buttonStyle(GhostButtonStyle(small: true))
-                            Button {
-                                Task { await store.dismissAudiobookSuggestion(asin: s.asin ?? "") }
-                            } label: {
-                                Image(systemName: "xmark")
-                            }.buttonStyle(GhostButtonStyle(small: true))
-                                .help("Not interested — hides this suggestion")
                         }
                         .padding(.vertical, 6).padding(.horizontal, 10)
                         .inset(padding: 0, radius: PX.controlRadius, fill: PX.bg3, stroke: PX.line)
@@ -394,7 +384,6 @@ struct AudiobooksView: View {
         .task {
             // page-local poll while visible
             await store.loadAudiobookShelf()
-            await store.loadAudiobookSuggestions()
             await store.loadAudiobookWanted()
             var n = 0
             while !Task.isCancelled {
@@ -402,9 +391,26 @@ struct AudiobooksView: View {
                 n += 1
                 if n % 6 == 0 { await store.loadAudiobookShelf() }   // shelf every ~30s
                 if n % 3 == 0 { await store.loadAudiobookWanted() }  // wanted every ~15s
-                if n % 24 == 0 { await store.loadAudiobookSuggestions() }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func availabilityBadge(_ state: Bool?) -> some View {
+        switch state {
+        case .some(true):
+            Text("✓ Soulseek").font(.system(size: 10, weight: .semibold)).foregroundStyle(PX.sp)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .overlay(Capsule().strokeBorder(PX.sp.opacity(0.4), lineWidth: 1))
+                .help("Available on Soulseek right now")
+        case .some(false):
+            Text("not found now").font(.system(size: 10)).foregroundStyle(PX.muted)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .overlay(Capsule().strokeBorder(PX.line, lineWidth: 1))
+                .help("Not on Soulseek right now — Download still queues and retries for days")
+        case .none:
+            Text("checking…").font(.system(size: 10)).foregroundStyle(PX.muted).opacity(0.7)
         }
     }
 

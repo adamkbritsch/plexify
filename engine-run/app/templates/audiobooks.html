@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}Audiobooks — Plexify{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <h1 style="margin:0 0 4px">Audiobooks</h1>
+  <p class="muted small" style="margin:0">Drop a book (folder of mp3s or a single file) into the drop folder — it gets merged to one chapterized m4b, matched against Audible, tagged, and filed into your Plex audiobook library.</p>
+  <p class="small" id="ab-warn" style="margin:6px 0 0; color:#ffb000; display:none"></p>
+</div>
+
+<section class="card">
+  <div class="row" style="align-items:center; gap:12px">
+    <h2 style="margin:0">Pipeline</h2>
+    <span class="muted small" id="ab-working"></span>
+    <span style="flex:1"></span>
+    <button type="button" class="btn primary" id="ab-organize-now">Organize now</button>
+    <span class="muted small" id="ab-org-msg"></span>
+  </div>
+  <div class="ab-stages" id="ab-stages"></div>
+</section>
+
+<section class="card" id="ab-converter-card" style="display:none">
+  <div class="row" style="align-items:center; gap:10px">
+    <h2 style="margin:0">Converting now</h2>
+    <span class="smart-badge" id="ab-conv-queue-badge" style="display:none"></span>
+  </div>
+  <div id="ab-conv-active"></div>
+  <div id="ab-conv-queue"></div>
+</section>
+
+<section class="card" id="ab-review-card" style="display:none">
+  <div class="row" style="align-items:center; gap:10px">
+    <h2 style="margin:0">Needs review</h2>
+    <span class="smart-badge" id="ab-review-badge"></span>
+  </div>
+  <p class="muted small">The matcher refuses to guess: file the guess, pick the right edition, or type the author and title yourself (books that aren't on Audible get filed with your values).</p>
+  <div id="ab-review-list"></div>
+</section>
+
+<section class="card">
+  <div class="row" style="align-items:center; gap:12px">
+    <h2 style="margin:0">Library</h2>
+    <span class="smart-badge" id="ab-shelf-count">0</span>
+    <label class="muted small" style="display:flex; align-items:center; gap:6px">sort
+      <select id="ab-sort" style="background:transparent; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:2px 6px">
+        <option>Recently added</option><option>Title</option><option>Author</option><option>Most parts</option>
+      </select>
+    </label>
+    <span style="flex:1"></span>
+    <span class="muted small" id="ab-shelf-note">deleting moves the book to the trash folder on the NAS</span>
+  </div>
+  <div class="ab-shelf" id="ab-shelf"><p class="muted small">Loading…</p></div>
+</section>
+
+<section class="card">
+  <h2>Recently organized</h2>
+  <div id="ab-recent"><p class="muted small">Loading…</p></div>
+</section>
+
+<style>
+.ab-stages{display:flex;gap:12px;margin-top:12px;flex-wrap:wrap}
+.ab-stage{flex:1;min-width:120px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:rgba(255,255,255,0.02)}
+.ab-stage .k{font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--muted);text-transform:uppercase}
+.ab-stage .v{font-size:22px;font-weight:600;margin-top:2px}
+.ab-stage .v.ok{color:#3ddc84}.ab-stage .v.warn{color:#ffb000}
+.ab-bar{height:5px;background:rgba(255,255,255,0.07);border-radius:3px;margin-top:8px;overflow:hidden}
+.ab-bar>div{height:5px;background:var(--plex,#ebaf00);border-radius:3px;transition:width .4s}
+.ab-conv-row,.ab-rev-row{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:8px;background:rgba(255,255,255,0.02)}
+.ab-upnext{font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--muted);margin:10px 0 4px;text-transform:uppercase}
+.ab-q{display:flex;gap:8px;font-size:12px;color:var(--muted);padding:2px 0}
+.ab-q .n{color:var(--fg)}
+.ab-shelf{display:grid;grid-template-columns:repeat(auto-fill,minmax(142px,1fr));gap:16px;margin-top:14px}
+.ab-book{position:relative}
+.ab-cover{position:relative;width:100%;aspect-ratio:1/1;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:rgba(255,255,255,0.03)}
+.ab-cover img{width:100%;height:100%;object-fit:cover;display:block}
+.ab-cover .del{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.72);border:1px solid var(--line);border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--fg);cursor:pointer;opacity:0;transition:opacity .12s}
+.ab-book:hover .del{opacity:1}
+.ab-cover .parts{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.72);border:1px solid var(--line);border-radius:999px;font-size:10px;font-weight:600;padding:2px 7px}
+.ab-title{font-size:12px;font-weight:500;margin-top:7px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ab-author{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ab-recent-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.ab-recent-row img{width:40px;height:40px;object-fit:cover;border-radius:4px}
+.ab-rev-cands button,.ab-rev-manual button,.ab-rev-row .ghost{background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:4px 10px;font-size:12px;cursor:pointer}
+.ab-rev-cands button:hover,.ab-rev-manual button:hover{border-color:var(--plex,#ebaf00)}
+.ab-rev-manual{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center}
+.ab-rev-manual input{background:rgba(255,255,255,0.03);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px 8px;font-size:12px}
+.ab-rev-badge{font-size:10px;font-weight:600;letter-spacing:.4px;color:#ffb000;border:1px solid rgba(255,176,0,.5);border-radius:4px;padding:1px 6px;text-transform:uppercase}
+</style>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  let shelf = [], lastStatus = null;
+
+  function stage(k, v, cls){ return `<div class="ab-stage"><div class="k">${k}</div><div class="v ${cls||''}">${v??0}</div></div>`; }
+
+  function renderStatus(d){
+    lastStatus = d;
+    const warn = $('ab-warn');
+    if (d.feature_enabled !== true) { warn.textContent = 'Audiobooks are OFF — enable them in Settings.'; warn.style.display=''; }
+    else if (d.reachable !== true) { warn.textContent = 'Organizer daemon unreachable — it runs on the NAS (plexify-downloader).'; warn.style.display=''; }
+    else if (d.dirs_ok !== true) { warn.textContent = 'Audiobook folders not mounted in the daemon — see docs/AUDIOBOOKS.md.'; warn.style.display=''; }
+    else warn.style.display='none';
+
+    $('ab-stages').innerHTML =
+      stage('Dropped', d.dropped) + stage('Converting', d.converting) +
+      stage('Ready to tag', d.untagged) +
+      stage('Needs review', d.review, (d.review||0) > 0 ? 'warn' : '') +
+      stage('In library', d.organized_total, 'ok');
+
+    const w = d.working_on;
+    $('ab-working').textContent = (w && w.file) ? `organizing: ${w.file}${w.stage ? ' — ' + w.stage : ''}` : '';
+
+    // converter
+    const conv = d.converter || {};
+    const card = $('ab-converter-card');
+    const hasConv = conv.active || (conv.queue||[]).length;
+    card.style.display = hasConv ? '' : 'none';
+    if (hasConv) {
+      const q = conv.queue || [];
+      const badge = $('ab-conv-queue-badge');
+      badge.style.display = q.length ? '' : 'none';
+      badge.textContent = q.length + ' queued';
+      const a = conv.active;
+      $('ab-conv-active').innerHTML = a ? `
+        <div class="ab-conv-row">
+          <div class="row" style="justify-content:space-between; gap:10px">
+            <strong style="font-size:13px">${plxEsc(a.book||'?')}${a.stalled ? ' <span class="ab-rev-badge">stalled?</span>' : ''}</strong>
+            <span class="muted small">${a.phase==='assembling' ? 'assembling the m4b' : `${a.done??0}/${a.files??0} tracks`} · ${a.percent??0}%</span>
+          </div>
+          <div class="ab-bar"><div style="width:${a.percent??0}%"></div></div>
+        </div>` :
+        '<p class="muted small">Between books — auto-m4b picks up the next one on its minute cycle.</p>';
+      $('ab-conv-queue').innerHTML = q.length ? '<div class="ab-upnext">Up next</div>' +
+        q.slice(0,6).map(b=>`<div class="ab-q"><span class="n">${plxEsc(b.book||'?')}</span><span style="flex:1"></span><span>${b.src_bytes?Math.round(b.src_bytes/1048576)+' MB':''}</span></div>`).join('') +
+        (q.length>6 ? `<div class="ab-q">+ ${q.length-6} more</div>` : '') : '';
+    }
+
+    // review
+    const items = d.review_items || [];
+    $('ab-review-card').style.display = items.length ? '' : 'none';
+    $('ab-review-badge').textContent = items.length;
+    $('ab-review-list').innerHTML = items.map((r,i)=>{
+      const g = r.guess || {};
+      const cands = (r.candidates||[]).slice(0,3);
+      return `<div class="ab-rev-row" data-file="${plxEsc(r.file||'')}">
+        <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap">
+          <strong style="font-size:13px">${plxEsc(r.file||'?')}</strong>
+          ${r.reason ? `<span class="ab-rev-badge">${plxEsc(String(r.reason).split(':')[0].replace(/_/g,' '))}</span>` : ''}
+          <span style="flex:1"></span>
+          <button class="ghost" onclick="abDiscard('${encodeURIComponent(r.file||'')}')">${plxIcon('i-x')} Discard</button>
+        </div>
+        ${g.title ? `<div class="row" style="gap:8px; align-items:center; margin-top:6px">
+          <span class="muted small">guessed: ${plxEsc(g.title)}${g.author ? ' — ' + plxEsc(g.author) : ''}</span>
+          ${g.author ? `<button class="ghost" onclick="abResolve('${encodeURIComponent(r.file||'')}',null,'${encodeURIComponent(g.author)}','${encodeURIComponent(g.title)}')">${plxIcon('i-check')} File the guess</button>` : ''}
+        </div>` : ''}
+        ${cands.map(c=>`<div style="margin-top:6px"><button class="ghost" onclick="abResolve('${encodeURIComponent(r.file||'')}','${plxEsc(c.asin||'')}')">Use: ${plxEsc(c.title||'?')} — ${plxEsc((c.authors||[]).join(', '))}</button></div>`).join('')}
+        <div class="ab-rev-manual">
+          <input placeholder="Author" id="ab-ma-${i}" style="max-width:180px">
+          <input placeholder="Title" id="ab-mt-${i}" style="max-width:240px">
+          <button onclick="abResolveManual('${encodeURIComponent(r.file||'')}',${i})">File it</button>
+          <span class="muted small ab-rev-msg"></span>
+        </div>
+      </div>`;
+    }).join('');
+
+    // recent
+    const rec = (d.recent||[]).filter(r=>r.status==='organized').slice(0,20);
+    $('ab-recent').innerHTML = rec.length ? rec.map(b=>`
+      <div class="ab-recent-row">
+        ${b.cover_url ? `<img src="${plxEsc(b.cover_url)}" loading="lazy" alt="">` : '<div style="width:40px;height:40px;border-radius:4px;background:rgba(255,255,255,0.05)"></div>'}
+        <div style="min-width:0"><div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${plxEsc(b.title||b.file||'?')}</div>
+        <div class="muted" style="font-size:12px">${plxEsc(b.author||'')}</div></div>
+        <span style="flex:1"></span>
+        ${b.score ? `<span class="muted small">match ${b.score}</span>` : ''}
+      </div>`).join('') : '<p class="muted small">Nothing organized yet — drop a book to get started.</p>';
+  }
+
+  function sortShelf(items){
+    const mode = $('ab-sort').value, t = s => (s||'').toLowerCase();
+    const by = {
+      'Title': (a,b)=> t(a.title) < t(b.title) ? -1 : 1,
+      'Author': (a,b)=> t(a.author) !== t(b.author) ? (t(a.author) < t(b.author) ? -1 : 1) : (t(a.title) < t(b.title) ? -1 : 1),
+      'Most parts': (a,b)=> (b.tracks||0)-(a.tracks||0) || (t(a.title) < t(b.title) ? -1 : 1),
+      'Recently added': (a,b)=> (b.added_at||0)-(a.added_at||0),
+    };
+    return items.slice().sort(by[mode] || by['Recently added']);
+  }
+
+  function renderShelf(){
+    $('ab-shelf-count').textContent = shelf.length;
+    $('ab-shelf').innerHTML = shelf.length ? sortShelf(shelf).map(b=>`
+      <div class="ab-book">
+        <div class="ab-cover">
+          <img src="/api/audiobooks/cover/${b.key||0}" loading="lazy" alt=""
+               onerror="this.style.display='none'">
+          ${b.rel_dir ? `<div class="del" title="Move this book to the trash folder" onclick="abDelete('${encodeURIComponent(b.rel_dir)}','${plxEsc(b.title||'')}')">${plxIcon('i-x')}</div>` : ''}
+          ${(b.tracks||0) > 1 ? `<div class="parts">${b.tracks} parts</div>` : ''}
+        </div>
+        <div class="ab-title">${plxEsc(b.title||'?')}</div>
+        <div class="ab-author">${plxEsc(b.author||'')}</div>
+      </div>`).join('') : '<p class="muted small">No books indexed yet.</p>';
+  }
+
+  async function poll(){
+    try { renderStatus(await (await fetch('/api/audiobooks/status')).json()); } catch(e){}
+  }
+  async function loadShelf(){
+    try { shelf = (await (await fetch('/api/audiobooks/library')).json()).items || []; renderShelf(); } catch(e){}
+  }
+
+  window.abDelete = async (rel, title) => {
+    if (!confirm(`Delete "${decodeURIComponent(title||'')||'this book'}"?\n\nThe book folder moves to the NAS trash folder (recoverable) and the Plex entry is removed. Nothing is permanently deleted.`)) return;
+    const note = $('ab-shelf-note');
+    note.textContent = 'deleting…';
+    try {
+      const r = await (await fetch('/api/audiobooks/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({rel_dir: decodeURIComponent(rel)})})).json();
+      note.textContent = r.ok ? 'moved to trash' : ('delete failed: ' + (r.error || 'unknown'));
+      if (r.ok) { shelf = shelf.filter(b => b.rel_dir !== decodeURIComponent(rel)); renderShelf(); }
+    } catch(e){ note.textContent = 'delete failed'; }
+    setTimeout(()=>{ note.textContent = 'deleting moves the book to the trash folder on the NAS'; }, 6000);
+  };
+
+  window.abDiscard = async (file) => {
+    if (!confirm(`Discard "${decodeURIComponent(file)}"?\n\nThe file moves to the NAS trash folder — recoverable, never permanently deleted.`)) return;
+    try {
+      const r = await (await fetch('/api/audiobooks/discard', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({file: decodeURIComponent(file)})})).json();
+      if (!r.ok) alert('discard failed: ' + (r.error||'unknown'));
+    } catch(e){ alert('discard failed'); }
+    poll();
+  };
+
+  window.abResolve = async (file, asin, author, title) => {
+    const body = {file: decodeURIComponent(file)};
+    if (asin) body.asin = asin; else { body.author = decodeURIComponent(author||''); body.title = decodeURIComponent(title||''); }
+    try {
+      const r = await (await fetch('/api/audiobooks/resolve', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json();
+      if (!r.ok) alert('resolve failed: ' + (r.error||'unknown'));
+    } catch(e){ alert('resolve failed'); }
+    poll(); loadShelf();
+  };
+
+  window.abResolveManual = (file, i) => {
+    const a = $('ab-ma-'+i).value.trim(), t = $('ab-mt-'+i).value.trim();
+    if (!a || !t) { alert('Author and title are both needed.'); return; }
+    abResolve(file, null, encodeURIComponent(a), encodeURIComponent(t));
+  };
+
+  $('ab-organize-now').addEventListener('click', async () => {
+    const msg = $('ab-org-msg');
+    msg.textContent = 'starting…';
+    try {
+      const r = await (await fetch('/api/audiobooks/organize-now', {method:'POST'})).json();
+      msg.textContent = r.message || (r.ok ? 'started' : 'failed');
+    } catch(e){ msg.textContent = 'failed'; }
+    setTimeout(()=>{ msg.textContent=''; }, 8000);
+  });
+  $('ab-sort').addEventListener('change', renderShelf);
+
+  poll(); loadShelf();
+  setInterval(poll, 5000);
+  setInterval(loadShelf, 30000);
+})();
+</script>
+{% endblock %}

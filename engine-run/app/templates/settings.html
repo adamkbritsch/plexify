@@ -736,6 +736,7 @@
   <div class="row gap" style="margin-top:10px">
     <button type="button" class="btn" id="ab-save">Save</button>
     <button type="button" class="btn primary" id="ab-organize">Organize now</button>
+    <button type="button" class="btn" id="ab-create-section">Create Plex library</button>
     <span class="muted small" id="ab-status"></span>
   </div>
 </section>
@@ -751,7 +752,14 @@
     st.textContent='saving…'; await save(); st.textContent='starting…';
     let r; try{ r=await (await fetch('/api/audiobooks/organize-now',{method:'POST',headers:{'X-Requested-With':'fetch'}})).json(); }
     catch(e){ st.textContent='failed'; return; }
-    st.textContent=r.ok?(r.started?'organize pass started':'a pass is already running'):(r.error||'failed');
+    st.textContent=r.message||(r.ok?'started':(r.error||'failed'));
+  });
+  $('ab-create-section').addEventListener('click',async()=>{
+    st.textContent='saving…'; await save(); st.textContent='creating…';
+    let r; try{ r=await (await fetch('/api/audiobooks/create-plex-section',{method:'POST'})).json(); }
+    catch(e){ st.textContent='failed'; return; }
+    st.textContent=r.ok?('library ready — section '+(r.key||'?')):(r.error||'failed');
+    if(r.ok&&r.key)$('ab-section').value=r.key;
   });
 })();
 </script>

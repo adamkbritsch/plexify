@@ -10,6 +10,31 @@ struct AudiobooksView: View {
     @State private var confirmDelete = false
     @State private var deleteBusy = false
     @State private var deleteError: String?
+    @State private var shelfSort = "Recently added"
+    private static let shelfSorts = ["Recently added", "Title", "Author", "Most parts"]
+
+    private var sortedShelf: [AudiobookShelfItemDTO] {
+        let shelf = store.audiobookShelf ?? []
+        switch shelfSort {
+        case "Title":
+            return shelf.sorted {
+                ($0.title ?? "").localizedCaseInsensitiveCompare($1.title ?? "") == .orderedAscending
+            }
+        case "Author":
+            return shelf.sorted {
+                let a = ($0.author ?? "").localizedCaseInsensitiveCompare($1.author ?? "")
+                if a != .orderedSame { return a == .orderedAscending }
+                return ($0.title ?? "").localizedCaseInsensitiveCompare($1.title ?? "") == .orderedAscending
+            }
+        case "Most parts":
+            return shelf.sorted {
+                if ($0.tracks ?? 0) != ($1.tracks ?? 0) { return ($0.tracks ?? 0) > ($1.tracks ?? 0) }
+                return ($0.title ?? "").localizedCaseInsensitiveCompare($1.title ?? "") == .orderedAscending
+            }
+        default:   // Recently added
+            return shelf.sorted { ($0.added_at ?? 0) > ($1.added_at ?? 0) }
+        }
+    }
 
     private var st: AudiobooksStatusDTO? { store.audiobooks }
     private var reviewItems: [AudiobookDTO] {
@@ -159,9 +184,11 @@ struct AudiobooksView: View {
             // Library — every book Plex knows, as a cover-art shelf; deleting a book is a
             // soft-delete (folder → trash/, never unlinked; Plexify NEVER destroys audio)
             VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 8) {
+                HStack(spacing: 12) {
                     Text("Library").font(.system(size: 15, weight: .semibold)).foregroundStyle(PX.text)
                     Badge(text: "\((store.audiobookShelf ?? []).count)", tint: PX.muted)
+                    DropMenu(leading: "sort", current: shelfSort,
+                             options: Self.shelfSorts, compact: true) { shelfSort = $0 }
                     Spacer()
                     if let e = deleteError {
                         Text(e).font(.system(size: 11)).foregroundStyle(PX.danger).lineLimit(1)
@@ -170,7 +197,7 @@ struct AudiobooksView: View {
                             .font(.system(size: 11)).foregroundStyle(PX.muted)
                     }
                 }
-                let shelf = store.audiobookShelf ?? []
+                let shelf = sortedShelf
                 if shelf.isEmpty {
                     Text("No books indexed yet.")
                         .font(.system(size: 13)).foregroundStyle(PX.muted)

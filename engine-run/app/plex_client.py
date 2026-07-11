@@ -257,9 +257,15 @@ def list_audiobook_albums() -> list:
                         break
                 if rel_dir:
                     break
+            added = 0
+            try:
+                added = int(alb.addedAt.timestamp()) if getattr(alb, "addedAt", None) else 0
+            except Exception:
+                pass
             out.append({"key": alb.ratingKey, "title": alb.title or "",
                         "author": getattr(alb, "parentTitle", "") or "", "rel_dir": rel_dir,
-                        "tracks": n, "thumb": getattr(alb, "thumb", None) or ""})
+                        "tracks": n, "thumb": getattr(alb, "thumb", None) or "",
+                        "added_at": added})
     except Exception:
         log.exception("list_audiobook_albums failed")
     return out

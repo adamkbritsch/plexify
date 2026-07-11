@@ -390,6 +390,7 @@ struct AudiobookShelfItemDTO: Codable, Identifiable, Hashable {
     var rel_dir: String?
     var tracks: Int?
     var thumb: String?
+    var added_at: Int?
     var id: String { (rel_dir?.isEmpty == false) ? rel_dir! : "key-\(key ?? 0)" }
 }
 

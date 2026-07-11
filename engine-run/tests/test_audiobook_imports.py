@@ -785,5 +785,53 @@ class TestSoftDelete(unittest.TestCase):
             self.assertTrue(os.path.isfile(res["trash"]))
 
 
+
+
+class TestSubsetTitleTrap(unittest.TestCase):
+    """token_set_ratio scores a subset title as a PERFECT match — two live mis-files
+    (2026-07-10): 'The Wolf of Wall Street' filed as the sequel 'Catching the Wolf of Wall
+    Street'; 'Ender's Game' filed as the Full Cast Audioplay."""
+
+    def test_exact_title_beats_superset(self):
+        cands = [
+            {"asin": "CATCH", "title": "Catching the Wolf of Wall Street",
+             "authors": ["Jordan Belfort"]},
+            {"asin": "WOLF", "title": "The Wolf of Wall Street", "authors": ["Jordan Belfort"]},
+        ]
+        best, score = ab.pick_candidate(
+            {"title": "The Wolf of Wall Street", "author": "Jordan Belfort"}, cands)
+        self.assertEqual(best["asin"], "WOLF")
+        self.assertEqual(score, 100)
+
+    def test_exact_beats_superset_regardless_of_order(self):
+        cands = [
+            {"asin": "ALIVE", "title": "Ender's Game Alive: The Full Cast Audioplay",
+             "authors": ["Orson Scott Card"]},
+            {"asin": "NOVEL", "title": "Ender's Game", "authors": ["Orson Scott Card"]},
+        ]
+        best, _ = ab.pick_candidate(
+            {"title": "Ender's Game", "author": "Orson Scott Card"}, cands)
+        self.assertEqual(best["asin"], "NOVEL")
+
+    def test_franchise_suffix_still_clears_the_gate(self):
+        # subset matches must still pass when NO exact product exists
+        cands = [{"asin": "B1", "title": "The Ballad of Songbirds and Snakes: A Hunger Games Novel",
+                  "authors": ["Suzanne Collins"]}]
+        best, score = ab.pick_candidate(
+            {"title": "The Ballad of Songbirds and Snakes", "author": "Suzanne Collins"}, cands)
+        self.assertIsNotNone(best)
+        self.assertGreaterEqual(score, 80)
+
+    def test_mistagged_sequel_album_loses_to_filename(self):
+        # the rip's album tag says the SEQUEL; the filename says the real book — filename wins,
+        # tag kept as fallback interpretation
+        g = ab.infer_book_guess("The Wolf of Wall Street  - Jordan Belfort.m4b",
+                                {"album": "Catching the Wolf of Wall Street",
+                                 "albumartist": "Jordan Belfort"})
+        self.assertEqual(g["title"], "The Wolf of Wall Street")
+        self.assertIn({"title": "Catching the Wolf of Wall Street", "author": "Jordan Belfort"},
+                      g.get("alts") or [])
+
+
 if __name__ == "__main__":
     unittest.main()

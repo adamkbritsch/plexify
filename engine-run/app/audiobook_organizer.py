@@ -182,8 +182,12 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
         fn_guess = _guess_from_name(departed, dict(extra))
         fn_title = fn_guess.get("title") or ""
         if fn_guess.get("author") and len(fn_title) >= 5:
-            from rapidfuzz.fuzz import token_set_ratio
-            if token_set_ratio(fn_title.lower(), (tag_guess["title"] or "").lower()) < 60:
+            # SORT ratio, strict threshold: the tag stays primary only when it essentially
+            # EQUALS the filename title. Set ratio called 'Catching the Wolf of Wall Street'
+            # equal to 'The Wolf of Wall Street' (subset), so a mistagged rip's sequel tag
+            # beat the correct filename (live mis-file 2026-07-10).
+            from rapidfuzz.fuzz import token_sort_ratio
+            if token_sort_ratio(fn_title.lower(), (tag_guess["title"] or "").lower()) < 90:
                 fn_guess["alts"] = (fn_guess.get("alts") or []) + [
                     {"title": tag_guess["title"], "author": tag_guess.get("author")}]
                 return fn_guess
@@ -311,7 +315,7 @@ def pick_candidate(guess: dict, candidates: list,
     same-title different-author books are the classic audiobook mismatch."""
     if not candidates:
         return None, 0
-    from rapidfuzz.fuzz import token_set_ratio
+    from rapidfuzz.fuzz import token_set_ratio, token_sort_ratio
     g_title = (guess.get("title") or "").lower()
     g_author = (guess.get("author") or "").lower()
     g_part = guess.get("part")
@@ -323,7 +327,13 @@ def pick_candidate(guess: dict, candidates: list,
         # never match a DIFFERENT part's product (its metadata would carry the wrong part).
         if g_part and c_part and c_part != g_part:
             continue
-        ts = token_set_ratio(g_title, (c_title_clean or c.get("title") or "").lower())
+        # Title similarity blends SET ratio (tolerates subtitles/franchise suffixes) with
+        # SORT ratio (penalizes extra words) — set ratio alone scores a subset title as a
+        # PERFECT match, so 'The Wolf of Wall Street' tied with the sequel 'Catching the
+        # Wolf of Wall Street' and 'Ender's Game' picked the Full Cast Audioplay (both
+        # live mis-files, 2026-07-10). An exact title now always outranks a superset.
+        c_low = (c_title_clean or c.get("title") or "").lower()
+        ts = (token_set_ratio(g_title, c_low) + token_sort_ratio(g_title, c_low)) // 2
         if g_author:
             asc = max((token_set_ratio(g_author, (a or "").lower())
                        for a in (c.get("authors") or [""])), default=0)

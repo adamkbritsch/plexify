@@ -383,6 +383,29 @@ struct AudiobookDTO: Codable, Identifiable, Hashable {
     var id: String { "\(ts ?? "")-\(file ?? title ?? "")" }
 }
 
+struct AudiobookSuggestionDTO: Codable, Identifiable, Hashable {
+    var asin: String?
+    var title: String?
+    var author: String?
+    var runtime_min: Int?
+    var reason: String?
+    var id: String { asin ?? title ?? "?" }
+}
+
+struct AudiobookWantedDTO: Codable, Identifiable, Hashable {
+    var asin: String?
+    var title: String?
+    var author: String?
+    var status: String?        // wanted | downloading | delivered | gave_up
+    var attempts: Int?
+    var reason: String?
+    var last_error: String?
+    var total_mb: Int?
+    var runtime_min: Int?
+    var next_try_in_s: Int?
+    var id: String { asin ?? title ?? "?" }
+}
+
 struct AudiobookShelfItemDTO: Codable, Identifiable, Hashable {
     var key: Int?
     var title: String?

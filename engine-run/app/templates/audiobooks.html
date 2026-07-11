@@ -37,6 +37,24 @@
   <div id="ab-review-list"></div>
 </section>
 
+<section class="card" id="ab-suggest-card" style="display:none">
+  <div class="row" style="align-items:center; gap:10px">
+    <h2 style="margin:0">Suggested</h2>
+    <span class="smart-badge" id="ab-suggest-badge"></span>
+    <span style="flex:1"></span>
+    <span class="muted small">downloads search Soulseek now, then retry for days</span>
+  </div>
+  <div id="ab-suggest-list"></div>
+</section>
+
+<section class="card" id="ab-wanted-card" style="display:none">
+  <div class="row" style="align-items:center; gap:10px">
+    <h2 style="margin:0">Wanted</h2>
+    <span class="smart-badge" id="ab-wanted-badge"></span>
+  </div>
+  <div id="ab-wanted-list"></div>
+</section>
+
 <section class="card">
   <div class="row" style="align-items:center; gap:12px">
     <h2 style="margin:0">Library</h2>
@@ -78,6 +96,8 @@
 .ab-cover .parts{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.72);border:1px solid var(--line);border-radius:999px;font-size:10px;font-weight:600;padding:2px 7px}
 .ab-title{font-size:12px;font-weight:500;margin-top:7px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .ab-author{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ab-sug-row{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-top:8px;background:rgba(255,255,255,0.02)}
+.ab-sug-why{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
 .ab-recent-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
 .ab-recent-row img{width:40px;height:40px;object-fit:cover;border-radius:4px}
 .ab-rev-cands button,.ab-rev-manual button,.ab-rev-row .ghost{background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:4px 10px;font-size:12px;cursor:pointer}
@@ -202,6 +222,73 @@
       </div>`).join('') : '<p class="muted small">No books indexed yet.</p>';
   }
 
+  function wantLabel(w){
+    if (w.status === 'downloading') return 'downloading' + (w.total_mb ? ` · ${w.total_mb} MB` : '');
+    if (w.status === 'delivered') return 'delivered — organizing';
+    if (w.status === 'gave_up') return `gave up after ${w.attempts||0} tries`;
+    const s = w.next_try_in_s || 0;
+    if (s <= 0) return 'searching soon';
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+    return `retry in ${h>0?h+'h ':''}${m}m (try ${(w.attempts||0)+1})`;
+  }
+
+  function renderSuggestions(items){
+    const card = $('ab-suggest-card');
+    card.style.display = items.length ? '' : 'none';
+    $('ab-suggest-badge').textContent = items.length;
+    $('ab-suggest-list').innerHTML = items.slice(0,12).map(s=>`
+      <div class="ab-sug-row">
+        <div style="min-width:0">
+          <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${plxEsc(s.title||'?')}</div>
+          <div class="muted" style="font-size:12px">${plxEsc(s.author||'')}${s.runtime_min?` · ${Math.floor(s.runtime_min/60)}h ${s.runtime_min%60}m`:''}</div>
+        </div>
+        ${s.reason?`<span class="ab-sug-why">${plxEsc(s.reason)}</span>`:''}
+        <span style="flex:1"></span>
+        <button class="ghost" onclick='abWant(${JSON.stringify(JSON.stringify(s))})'>${plxIcon('i-arrow-up')} Download</button>
+        <button class="ghost" onclick="abDismiss('${plxEsc(s.asin||'')}')" title="Not interested">${plxIcon('i-x')}</button>
+      </div>`).join('');
+  }
+
+  function renderWanted(items){
+    const card = $('ab-wanted-card');
+    card.style.display = items.length ? '' : 'none';
+    $('ab-wanted-badge').textContent = items.length;
+    $('ab-wanted-list').innerHTML = items.map(w=>`
+      <div class="ab-sug-row">
+        <div style="min-width:0">
+          <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${plxEsc(w.title||'?')}</div>
+          <div class="muted" style="font-size:12px">${plxEsc(w.author||'')}</div>
+        </div>
+        <span style="flex:1"></span>
+        <span class="muted small">${plxEsc(wantLabel(w))}</span>
+        ${w.status!=='delivered'?`<button class="ghost" onclick="abUnwant('${plxEsc(w.asin||'')}','${encodeURIComponent(w.title||'')}')" title="Stop trying">${plxIcon('i-x')}</button>`:''}
+      </div>`).join('');
+  }
+
+  async function loadSuggestions(){
+    try { renderSuggestions((await (await fetch('/api/audiobooks/suggestions')).json()).items || []); } catch(e){}
+  }
+  async function loadWanted(){
+    try { renderWanted((await (await fetch('/api/audiobooks/wanted')).json()).items || []); } catch(e){}
+  }
+
+  window.abWant = async (sjson) => {
+    const s = JSON.parse(sjson);
+    try {
+      const r = await (await fetch('/api/audiobooks/want', {method:'POST', headers:{'Content-Type':'application/json'}, body: sjson})).json();
+      if (!r.ok) alert('failed: ' + (r.error||'unknown'));
+    } catch(e){ alert('failed'); }
+    loadSuggestions(); loadWanted();
+  };
+  window.abDismiss = async (asin) => {
+    try { await fetch('/api/audiobooks/dismiss', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({asin})}); } catch(e){}
+    loadSuggestions();
+  };
+  window.abUnwant = async (asin, title) => {
+    try { await fetch('/api/audiobooks/unwant', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({asin, title: decodeURIComponent(title)})}); } catch(e){}
+    loadWanted();
+  };
+
   async function poll(){
     try { renderStatus(await (await fetch('/api/audiobooks/status')).json()); } catch(e){}
   }
@@ -257,9 +344,11 @@
   });
   $('ab-sort').addEventListener('change', renderShelf);
 
-  poll(); loadShelf();
+  poll(); loadShelf(); loadSuggestions(); loadWanted();
   setInterval(poll, 5000);
   setInterval(loadShelf, 30000);
+  setInterval(loadWanted, 15000);
+  setInterval(loadSuggestions, 120000);
 })();
 </script>
 {% endblock %}

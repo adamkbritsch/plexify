@@ -181,6 +181,92 @@ struct AudiobooksView: View {
                 }.card()
             }
 
+            // Suggested — books like the library's, one click to want them
+            if let sugs = store.audiobookSuggestions, !sugs.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Text("Suggested").font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(PX.text)
+                        Badge(text: "\(sugs.count)", tint: PX.muted)
+                        Spacer()
+                        Text("downloads search Soulseek now, then retry for days")
+                            .font(.system(size: 11)).foregroundStyle(PX.muted)
+                    }
+                    ForEach(sugs.prefix(12)) { s in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(s.title ?? "?").font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(PX.text).lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Text(s.author ?? "").font(.system(size: 12))
+                                        .foregroundStyle(PX.text2).lineLimit(1)
+                                    if let r = s.runtime_min, r > 0 {
+                                        Text(verbatim: "\(r / 60)h \(r % 60)m")
+                                            .font(.system(size: 11)).foregroundStyle(PX.muted)
+                                    }
+                                }
+                            }
+                            if let why = s.reason, !why.isEmpty {
+                                Text(why).font(.system(size: 11)).foregroundStyle(PX.muted)
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 7).padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.white.opacity(0.05)))
+                            }
+                            Spacer()
+                            Button {
+                                Task { _ = await store.wantAudiobook(s) }
+                            } label: {
+                                Label("Download", systemImage: "arrow.down.circle")
+                            }.buttonStyle(GhostButtonStyle(small: true))
+                            Button {
+                                Task { await store.dismissAudiobookSuggestion(asin: s.asin ?? "") }
+                            } label: {
+                                Image(systemName: "xmark")
+                            }.buttonStyle(GhostButtonStyle(small: true))
+                                .help("Not interested — hides this suggestion")
+                        }
+                        .padding(.vertical, 6).padding(.horizontal, 10)
+                        .inset(padding: 0, radius: PX.controlRadius, fill: PX.bg3, stroke: PX.line)
+                    }
+                }.card()
+            }
+
+            // Wanted — the download list: tries Soulseek now, retries for days
+            if let wants = store.audiobookWanted, !wants.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Text("Wanted").font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(PX.text)
+                        Badge(text: "\(wants.count)", tint: PX.muted)
+                        Spacer()
+                    }
+                    ForEach(wants) { w in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(w.title ?? "?").font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(PX.text).lineLimit(1)
+                                Text(w.author ?? "").font(.system(size: 12))
+                                    .foregroundStyle(PX.text2).lineLimit(1)
+                            }
+                            Spacer()
+                            Text(wantLabel(w)).font(.system(size: 11))
+                                .foregroundStyle(wantTint(w)).lineLimit(1)
+                            if w.status != "delivered" {
+                                Button {
+                                    Task { _ = await store.unwantAudiobook(asin: w.asin ?? "",
+                                                                           title: w.title ?? "") }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                }.buttonStyle(GhostButtonStyle(small: true))
+                                    .help("Stop trying to get this book")
+                            }
+                        }
+                        .padding(.vertical, 6).padding(.horizontal, 10)
+                        .inset(padding: 0, radius: PX.controlRadius, fill: PX.bg3, stroke: PX.line)
+                    }
+                }.card()
+            }
+
             // Library — every book Plex knows, as a cover-art shelf; deleting a book is a
             // soft-delete (folder → trash/, never unlinked; Plexify NEVER destroys audio)
             VStack(alignment: .leading, spacing: 14) {
@@ -279,11 +365,15 @@ struct AudiobooksView: View {
         .task {
             // page-local poll while visible
             await store.loadAudiobookShelf()
+            await store.loadAudiobookSuggestions()
+            await store.loadAudiobookWanted()
             var n = 0
             while !Task.isCancelled {
                 await store.loadAudiobooks()
                 n += 1
                 if n % 6 == 0 { await store.loadAudiobookShelf() }   // shelf every ~30s
+                if n % 3 == 0 { await store.loadAudiobookWanted() }  // wanted every ~15s
+                if n % 24 == 0 { await store.loadAudiobookSuggestions() }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
@@ -306,6 +396,31 @@ struct AudiobooksView: View {
     @ViewBuilder
     private func stageArrow() -> some View {
         Text(verbatim: ">").font(.system(size: 13, weight: .semibold)).foregroundStyle(PX.muted)
+    }
+
+    private func wantLabel(_ w: AudiobookWantedDTO) -> String {
+        switch w.status {
+        case "downloading":
+            return "downloading\(w.total_mb.map { " · \($0) MB" } ?? "")"
+        case "delivered":
+            return "delivered — organizing"
+        case "gave_up":
+            return "gave up after \(w.attempts ?? 0) tries"
+        default:
+            let s = w.next_try_in_s ?? 0
+            if s <= 0 { return "searching soon" }
+            let h = s / 3600, m = (s % 3600) / 60
+            return "retry in \(h > 0 ? "\(h)h " : "")\(m)m (try \((w.attempts ?? 0) + 1))"
+        }
+    }
+
+    private func wantTint(_ w: AudiobookWantedDTO) -> Color {
+        switch w.status {
+        case "downloading": return PX.sp
+        case "delivered": return PX.sp
+        case "gave_up": return PX.danger
+        default: return PX.muted
+        }
     }
 
     private func convDetail(_ a: ConvertingBookDTO) -> String {

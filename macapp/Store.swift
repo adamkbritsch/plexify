@@ -281,6 +281,36 @@ final class PlexifyStore: ObservableObject {
         await loadAudiobooks()
         return (ok, err)
     }
+    @Published var audiobookSuggestions: [AudiobookSuggestionDTO]?
+    @Published var audiobookWanted: [AudiobookWantedDTO]?
+    func loadAudiobookSuggestions(refresh: Bool = false) async {
+        struct R: Codable { var items: [AudiobookSuggestionDTO]? }
+        let path = refresh ? "/api/audiobooks/suggestions?refresh=1" : "/api/audiobooks/suggestions"
+        if let d: R = await get(path) { audiobookSuggestions = d.items ?? [] }
+    }
+    func loadAudiobookWanted() async {
+        struct R: Codable { var items: [AudiobookWantedDTO]? }
+        if let d: R = await get("/api/audiobooks/wanted") { audiobookWanted = d.items ?? [] }
+    }
+    func wantAudiobook(_ s: AudiobookSuggestionDTO) async -> (Bool, String?) {
+        var body: [String: Any] = ["asin": s.asin ?? "", "title": s.title ?? "",
+                                   "author": s.author ?? "", "reason": s.reason ?? ""]
+        if let r = s.runtime_min { body["runtime_min"] = r }
+        let (ok, err) = await postJSONChecked("/api/audiobooks/want", body)
+        if ok { audiobookSuggestions?.removeAll { $0.id == s.id } }
+        await loadAudiobookWanted()
+        return (ok, err)
+    }
+    func unwantAudiobook(asin: String, title: String) async -> Bool {
+        let (ok, _) = await postJSONChecked("/api/audiobooks/unwant",
+                                            ["asin": asin, "title": title])
+        await loadAudiobookWanted()
+        return ok
+    }
+    func dismissAudiobookSuggestion(asin: String) async {
+        _ = await postJSONChecked("/api/audiobooks/dismiss", ["asin": asin])
+        audiobookSuggestions?.removeAll { $0.asin == asin }
+    }
     func loadAudiobookSections() async {
         struct R: Codable { var sections: [PlexSectionDTO]? }
         if let d: R = await get("/api/plex/audiobook-sections") { audiobookSections = d.sections ?? [] }

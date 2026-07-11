@@ -426,6 +426,12 @@ def _audiobook_worker():
                                   AUDIOBOOKS_REVIEW_DIR)
                 organize_pass(AUDIOBOOKS_TEMP_DIR, AUDIOBOOKS_LIBRARY_DIR,
                               _audiobook_min_confidence(), AUDIOBOOKS_REVIEW_DIR)
+                # wanted-list acquisition (soulseek, multi-day retry) + daily suggestions
+                from app import audiobook_suggestor
+                if os.path.isdir(AUDIOBOOKS_IMPORT_DIR):
+                    audiobook_suggestor.acquire_pass(AUDIOBOOKS_IMPORT_DIR)
+                audiobook_suggestor.suggestions_cached(
+                    os.path.join(DATA_DIR, "audiobook_books.jsonl"))
         except Exception:
             log.exception("audiobook worker pass failed (continuing)")
         time.sleep(60)
@@ -460,6 +466,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "unauthorized"})
         if self.path == "/queue":
             return self._send(200, {"jobs": _all_jobs(), **counts})
+        if self.path.split("?")[0] == "/audiobooks/suggestions":
+            try:
+                from app import audiobook_suggestor
+                cache = audiobook_suggestor.suggestions_cached(
+                    os.path.join(DATA_DIR, "audiobook_books.jsonl"),
+                    force="refresh=1" in self.path)
+                return self._send(200, {"ok": True, **cache})
+            except Exception as e:
+                log.exception("audiobooks/suggestions failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
+        if self.path == "/audiobooks/wanted":
+            try:
+                from app import audiobook_suggestor
+                return self._send(200, {"ok": True,
+                                        "items": audiobook_suggestor.wanted_status()})
+            except Exception as e:
+                log.exception("audiobooks/wanted failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
         if self.path == "/audiobooks/status":
             try:
                 from app.audiobook_organizer import organizer_status
@@ -487,7 +511,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "unauthorized"})
         if self.path not in ("/enqueue", "/audiobooks/organize-now",
                              "/audiobooks/config", "/audiobooks/resolve",
-                             "/audiobooks/delete", "/audiobooks/discard"):
+                             "/audiobooks/delete", "/audiobooks/discard",
+                             "/audiobooks/want", "/audiobooks/unwant",
+                             "/audiobooks/dismiss"):
             return self._send(404, {"error": "not found"})
         try:
             n = int(self.headers.get("Content-Length", 0))
@@ -572,6 +598,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, res)
             except Exception as e:
                 log.exception("audiobooks/discard failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
+
+        if self.path == "/audiobooks/want":
+            try:
+                from app import audiobook_suggestor
+                return self._send(200, audiobook_suggestor.add_want(body or {}))
+            except Exception as e:
+                log.exception("audiobooks/want failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
+
+        if self.path == "/audiobooks/unwant":
+            try:
+                from app import audiobook_suggestor
+                return self._send(200, audiobook_suggestor.remove_want(
+                    str(body.get("asin") or ""), str(body.get("title") or "")))
+            except Exception as e:
+                log.exception("audiobooks/unwant failed")
+                return self._send(500, {"ok": False, "error": str(e)[:200]})
+
+        if self.path == "/audiobooks/dismiss":
+            try:
+                from app import audiobook_suggestor
+                return self._send(200, audiobook_suggestor.dismiss(str(body.get("asin") or "")))
+            except Exception as e:
+                log.exception("audiobooks/dismiss failed")
                 return self._send(500, {"ok": False, "error": str(e)[:200]})
 
         if body.get("source") not in ("soulseek", "spotiflac", "squid", "telegram"):

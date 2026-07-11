@@ -3903,6 +3903,62 @@ def api_audiobooks_discard():
     return jsonify(res)
 
 
+_AB_SUGG_CACHE = {"data": {"items": []}, "ts": 0.0}
+
+
+@bp.route("/api/audiobooks/suggestions")
+def api_audiobooks_suggestions():
+    """Books like the library's, with Download buttons. ?refresh=1 regenerates on the daemon
+    (Audible-paced, ~30s) — otherwise the daemon's daily cache answers instantly."""
+    from flask import jsonify, request
+    from . import audiobook_client
+    import time as _t
+    refresh = request.args.get("refresh") == "1"
+    if refresh or _t.time() - _AB_SUGG_CACHE["ts"] > 60:
+        _AB_SUGG_CACHE["data"] = audiobook_client.suggestions(refresh=refresh)
+        _AB_SUGG_CACHE["ts"] = _t.time()
+    return jsonify(_AB_SUGG_CACHE["data"])
+
+
+@bp.route("/api/audiobooks/wanted")
+def api_audiobooks_wanted():
+    from flask import jsonify
+    from . import audiobook_client
+    return jsonify(audiobook_client.wanted())
+
+
+@bp.route("/api/audiobooks/want", methods=["POST"])
+def api_audiobooks_want():
+    from flask import jsonify, request
+    from . import audiobook_client
+    data = request.get_json(force=True, silent=True) or {}
+    res = audiobook_client.want({k: data.get(k) for k in
+                                 ("asin", "title", "author", "runtime_min", "reason")})
+    if res.get("ok"):
+        _AB_SUGG_CACHE["ts"] = 0.0     # the suggestion moves to the wanted list
+    return jsonify(res)
+
+
+@bp.route("/api/audiobooks/unwant", methods=["POST"])
+def api_audiobooks_unwant():
+    from flask import jsonify, request
+    from . import audiobook_client
+    data = request.get_json(force=True, silent=True) or {}
+    return jsonify(audiobook_client.unwant(str(data.get("asin") or ""),
+                                           str(data.get("title") or "")))
+
+
+@bp.route("/api/audiobooks/dismiss", methods=["POST"])
+def api_audiobooks_dismiss():
+    from flask import jsonify, request
+    from . import audiobook_client
+    data = request.get_json(force=True, silent=True) or {}
+    res = audiobook_client.dismiss_suggestion(str(data.get("asin") or ""))
+    if res.get("ok"):
+        _AB_SUGG_CACHE["ts"] = 0.0
+    return jsonify(res)
+
+
 @bp.route("/api/plex/audiobook-sections")
 def api_plex_audiobook_sections():
     from flask import jsonify

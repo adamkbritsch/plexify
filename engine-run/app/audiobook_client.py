@@ -128,6 +128,42 @@ def discard_review(file: str) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
 
+def suggestions(refresh: bool = False) -> dict:
+    try:
+        return _req("/audiobooks/suggestions" + ("?refresh=1" if refresh else ""),
+                    timeout=90 if refresh else 20)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "items": []}
+
+
+def wanted() -> dict:
+    try:
+        return _req("/audiobooks/wanted", timeout=15)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "items": []}
+
+
+def want(item: dict) -> dict:
+    try:
+        return _req("/audiobooks/want", item, timeout=15)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def unwant(asin: str = "", title: str = "") -> dict:
+    try:
+        return _req("/audiobooks/unwant", {"asin": asin, "title": title}, timeout=15)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def dismiss_suggestion(asin: str) -> dict:
+    try:
+        return _req("/audiobooks/dismiss", {"asin": asin}, timeout=15)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 def audiobook_tick() -> dict:
     """Engine-side glue, safe to call often (status poll / scheduler): push config, read daemon
     status, and when the organized count has grown since the last look, trigger a Plex scan of

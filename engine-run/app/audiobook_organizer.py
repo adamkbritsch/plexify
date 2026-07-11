@@ -636,6 +636,9 @@ def _settled(path: str, size_memo: Optional[dict] = None) -> bool:
 # ── the pass ───────────────────────────────────────────────────────────────────────────────────
 
 _PASS_LOCK = threading.Lock()
+# What the organizer is doing RIGHT NOW — surfaced through organizer_status so the UI can show
+# live progress instead of a dead button ('Organize now' gave zero feedback).
+_CURRENT_WORK = {"file": None, "stage": None}
 
 
 def _apply_part_info(meta: dict, guess: dict) -> None:
@@ -768,6 +771,7 @@ def organize_pass(temp_dir: str, library_dir: str,
                 out["skipped_unsettled"] += 1
                 continue
             try:
+                _CURRENT_WORK.update(file=fn, stage="matching")
                 guess = infer_book_guess(path, read_mp4_tags(path))
                 meta, score, candidates = None, 0, []
                 if guess.get("asin"):
@@ -789,6 +793,7 @@ def organize_pass(temp_dir: str, library_dir: str,
                     out["review"] += 1
                     continue
                 _apply_part_info(meta, guess)
+                _CURRENT_WORK.update(file=fn, stage="tagging + filing")
                 dest = _tag_and_file(path, meta, library_dir)
                 _cleanup_book_dir(container_dir, os.path.dirname(dest))
                 _log_book({"status": "organized", "file": fn, "title": meta["title"],
@@ -817,6 +822,7 @@ def organize_pass(temp_dir: str, library_dir: str,
                     except Exception:
                         log.exception("review-park failed for %s", fn)
     finally:
+        _CURRENT_WORK.update(file=None, stage=None)
         _PASS_LOCK.release()
     log.info("audiobook organize_pass: %s", out)
     return out
@@ -936,6 +942,7 @@ def organizer_status(temp_dir: str, library_dir: str,
         "review": _count(None, {".m4b"}),
         "review_items": review_items(review_dir),
         "converter": converter_status(temp_dir),
+        "working_on": (dict(_CURRENT_WORK) if _CURRENT_WORK.get("file") else None),
         "organized_total": organized_total,
         "recent": records,
         "library_visible": os.path.isdir(library_dir),

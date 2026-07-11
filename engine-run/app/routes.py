@@ -3750,7 +3750,8 @@ def api_nas_downloader_status():
 # ── audiobooks ────────────────────────────────────────────────────────────────
 _AB_CACHE = {"reachable": False, "enabled": False, "dirs_ok": False, "dropped": 0,
              "imports_waiting": 0, "converting": 0, "untagged": 0, "review": 0,
-             "review_items": [], "converter": {}, "organized_total": 0, "recent": [],
+             "review_items": [], "converter": {}, "working_on": None,
+             "organized_total": 0, "recent": [],
              "library_visible": False, "ts": 0.0}
 _AB_REFRESHING = [False]
 
@@ -3765,8 +3766,8 @@ def _refresh_audiobook_status():
         audiobook_client.audiobook_tick()
         st = audiobook_client.daemon_status()
         for k in ("reachable", "enabled", "dirs_ok", "dropped", "imports_waiting", "converting",
-                  "untagged", "review", "review_items", "converter", "organized_total",
-                  "recent", "library_visible"):
+                  "untagged", "review", "review_items", "converter", "working_on",
+                  "organized_total", "recent", "library_visible"):
             if k in st:
                 _AB_CACHE[k] = st[k]
         if not st.get("reachable"):
@@ -3797,7 +3798,18 @@ def api_audiobooks_organize_now():
     from flask import jsonify
     from . import audiobook_client
     audiobook_client.push_config()
-    return jsonify(audiobook_client.organize_now())
+    res = audiobook_client.organize_now()
+    # human message for the button — 'Organize now' used to give no feedback at all
+    if not res.get("ok"):
+        res["message"] = res.get("error") or "couldn't reach the organizer daemon"
+    elif not res.get("started"):
+        res["message"] = res.get("error") or "a pass is already running"
+    else:
+        n = int(res.get("untagged") or 0) + int(res.get("imports_waiting") or 0)
+        res["message"] = (f"organizing — {n} waiting" if n > 0
+                          else "started — nothing waiting right now")
+    _AB_CACHE["ts"] = 0.0
+    return jsonify(res)
 
 
 @bp.route("/api/audiobooks/resolve", methods=["POST"])

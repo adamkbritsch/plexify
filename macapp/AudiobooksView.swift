@@ -57,11 +57,18 @@ struct AudiobooksView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 8) {
                     Text("Pipeline").font(.system(size: 15, weight: .semibold)).foregroundStyle(PX.text)
+                    if let w = st?.working_on, let f = w.file {
+                        Text("organizing: \(f)\(w.stage.map { " — \($0)" } ?? "")")
+                            .font(.system(size: 11)).foregroundStyle(PX.sp).lineLimit(1)
+                    } else if let msg = store.audiobookOrganizeMsg {
+                        Text(msg).font(.system(size: 11)).foregroundStyle(PX.muted).lineLimit(1)
+                    }
                     Spacer()
                     Button { Task { await store.organizeAudiobooksNow() } } label: {
                         Label("Organize now", systemImage: "wand.and.rays")
                     }.buttonStyle(DashCtlButtonStyle())
-                        .disabled(st?.feature_enabled != true || st?.reachable != true)
+                        .disabled(st?.feature_enabled != true || st?.reachable != true
+                                  || store.audiobookOrganizeMsg == "starting…")
                     Button { openDropFolder() } label: {
                         Label("Open drop folder", systemImage: "folder")
                     }.buttonStyle(DashCtlButtonStyle())

@@ -229,10 +229,24 @@ final class PlexifyStore: ObservableObject {
     func loadAudiobooks() async {
         if let d: AudiobooksStatusDTO = await get("/api/audiobooks/status") { audiobooks = d }
     }
+    @Published var audiobookOrganizeMsg: String?
     func organizeAudiobooksNow() async {
-        _ = await postAction("/api/audiobooks/organize-now")
-        lastAction = "Audiobook organize started"
+        struct R: Codable { var ok: Bool?; var message: String? }
+        audiobookOrganizeMsg = "starting…"
+        guard let url = URL(string: base + "/api/audiobooks/organize-now") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let r = try? JSONDecoder().decode(R.self, from: data)
+            audiobookOrganizeMsg = r?.message ?? ((r?.ok ?? false) ? "started" : "failed")
+        } catch {
+            audiobookOrganizeMsg = "failed: \(error.localizedDescription)"
+        }
         await loadAudiobooks()
+        // the message is transient — clear it after a bit
+        Task { try? await Task.sleep(nanoseconds: 8_000_000_000)
+               if !Task.isCancelled { self.audiobookOrganizeMsg = nil } }
     }
     func resolveAudiobook(file: String, asin: String? = nil,
                           author: String? = nil, title: String? = nil) async -> Bool {

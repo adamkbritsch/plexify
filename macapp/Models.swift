@@ -392,6 +392,11 @@ struct AudiobookShelfItemDTO: Codable, Identifiable, Hashable {
     var id: String { (rel_dir?.isEmpty == false) ? rel_dir! : "key-\(key ?? 0)" }
 }
 
+struct WorkingOnDTO: Codable {
+    var file: String?
+    var stage: String?
+}
+
 struct ConverterStatusDTO: Codable {
     var active: ConvertingBookDTO?
     var queue: [ConvertingBookDTO]?
@@ -418,6 +423,7 @@ struct AudiobooksStatusDTO: Codable {
     var review: Int?
     var review_items: [AudiobookDTO]?   // authoritative queue: review/ folder joined w/ ledger
     var converter: ConverterStatusDTO?  // auto-m4b live progress (active book + queue)
+    var working_on: WorkingOnDTO?       // what the organizer is processing right now
     var organized_total: Int?
     var recent: [AudiobookDTO]?
     var library_visible: Bool?

@@ -515,7 +515,15 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     _AB_NOW_LOCK.release()
             threading.Thread(target=_one_shot, daemon=True, name="ab-organize-now").start()
-            return self._send(200, {"ok": True, "started": True})
+            try:
+                from app.audiobook_organizer import _iter_untagged, imports_waiting
+                pending = len(_iter_untagged(os.path.join(AUDIOBOOKS_TEMP_DIR, "untagged")))
+                waiting = (imports_waiting(AUDIOBOOKS_IMPORT_DIR)
+                           if os.path.isdir(AUDIOBOOKS_IMPORT_DIR) else 0)
+            except Exception:
+                pending = waiting = -1
+            return self._send(200, {"ok": True, "started": True,
+                                    "untagged": pending, "imports_waiting": waiting})
 
         if self.path == "/audiobooks/config":
             try:

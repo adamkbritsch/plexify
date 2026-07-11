@@ -62,100 +62,178 @@ Spotify ⇄ [ Plexify engine + web UI ] ⇄ Plex
 | Thing | Required? | Notes |
 |---|---|---|
 | **Plex Media Server** | Yes | You almost certainly already run one. Plexify reads + writes playlists and files FLACs into a library folder. |
-| **Spotify Developer app** | Yes | Free, ~2 minutes — you use *your own* credentials. See [Spotify setup](#spotify-setup). |
+| **Spotify Developer app** | Yes | Free, ~2 minutes — you use *your own* credentials. See [Connecting Spotify](#connecting-spotify). |
 | **Docker + Docker Compose** | Recommended | The easiest way to run it. |
 | **slskd (Soulseek)** | Optional | A Soulseek source. Without it you can still use the other sources. |
 | **Lidarr** | Optional | Album organization / quality management. |
 | **Telegram account** | Optional | Enables the Telegram source. |
-| **auto-m4b + Audnexus agent** | Optional | Only for audiobooks — see [Audiobooks](#audiobooks). |
+| **auto-m4b + Audnexus agent** | Optional | Only for audiobooks — see [Adding audiobooks](#adding-audiobooks-optional). |
 
-## Quick start (Docker)
+## Getting started
+
+Setting Plexify up takes about **15 minutes**, and you only do it once. Here's the whole picture
+before you start:
+
+1. **Install it** with Docker (one command, below).
+2. **Open the web page** it serves and let the **setup wizard** connect your Spotify and Plex.
+3. **Turn on any download sources** you want (all optional).
+
+You don't need to touch the code. The only file you edit is a short settings file called `.env`,
+and the wizard handles the rest in your browser.
+
+**Before you begin, have these ready:**
+
+- **Docker Desktop** installed and running ([get it here](https://www.docker.com/products/docker-desktop/)) — this is what runs Plexify.
+- Your **Plex server** already set up with a music library.
+- A **Spotify account** (free is fine).
+
+### Step 1 — Install Plexify
+
+Open a terminal and run these three lines (this downloads Plexify and creates your settings file):
 
 ```bash
 git clone https://github.com/<you>/plexify.git
 cd plexify
 cp .env.example .env
-# edit .env — set MUSIC_DIR, DOWNLOADS_DIR, and PUBLIC_BASE_URL
+```
+
+### Step 2 — Fill in your settings file
+
+Open the new `.env` file in any text editor. You only need to set **three** things — the rest
+have sensible defaults you can ignore for now:
+
+| Setting | What to put | How to find it |
+|---|---|---|
+| `MUSIC_DIR` | The full path to the folder where Plex keeps your **music** | In Plex: **Settings → your Music library → Edit → Folders**. Copy that folder path. |
+| `DOWNLOADS_DIR` | Any empty folder Plexify can use as a **workspace** for downloads-in-progress | Make a new folder anywhere with space, e.g. `/Users/you/plexify-downloads`, and paste its path. |
+| `PUBLIC_BASE_URL` | The web address **you'll open Plexify at** | Leave it as `http://localhost:8787` if you'll use Plexify on this same computer. Only change it if you'll open it from another device (then use `http://<this-computer's-ip>:8787`). |
+
+Example of a filled-in `.env` (just those three lines):
+
+```bash
+MUSIC_DIR=/Volumes/Media/Music
+DOWNLOADS_DIR=/Volumes/Media/plexify-downloads
+PUBLIC_BASE_URL=http://localhost:8787
+```
+
+> **Why `PUBLIC_BASE_URL` matters:** Spotify sends you back to this exact address after you log
+> in, so it has to be the address you're actually using. `localhost` only works if you're setting
+> up on the same computer that's running Plexify.
+
+### Step 3 — Start it
+
+Back in the terminal, run:
+
+```bash
 docker compose up -d --build
 ```
 
-Then open **http://localhost:8787** and the setup wizard walks you through Spotify, Plex, optional sources, and the agreement. Done.
+The first run takes a few minutes while it builds. When it finishes, open
+**http://localhost:8787** (or whatever you set `PUBLIC_BASE_URL` to) in your browser.
 
-### Spotify setup
+You'll see a **setup wizard**. It walks you through connecting Spotify and Plex and accepting the
+usage agreement — the next two sections explain each step. Once you finish it, Plexify starts
+filling in your library on its own.
 
-1. Go to <https://developer.spotify.com/dashboard> and **Create an app**.
-2. Add a **Redirect URI** of exactly `PUBLIC_BASE_URL/auth/spotify/callback`
-   (e.g. `http://localhost:8787/auth/spotify/callback`, or your real host if you access Plexify remotely).
-3. Copy the **Client ID** and **Client Secret** into the wizard's Spotify step.
+### Connecting Spotify
 
-> Set `PUBLIC_BASE_URL` in `.env` to the address you actually open the UI at — the OAuth redirect is built from it, so `localhost` only works when you run setup from the same machine.
+The wizard will ask for a Spotify **Client ID** and **Client Secret**. These are free and take
+about two minutes to create — they let Plexify read *your* playlists and Liked Songs (you're
+using your own credentials, nothing is shared).
 
-### Plex setup
+1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and log in.
+2. Click **Create app**. Give it any name and description (e.g. "Plexify").
+3. In the **Redirect URI** box, paste your Plexify address followed by `/auth/spotify/callback`.
+   If you kept the default, that's exactly:
+   ```
+   http://localhost:8787/auth/spotify/callback
+   ```
+   (If you changed `PUBLIC_BASE_URL`, use that address instead — it must match *exactly*, or
+   Spotify will refuse to connect.)
+4. Save the app. Spotify shows you a **Client ID** and, behind a "View client secret" link, a
+   **Client Secret**. Copy both into the wizard's Spotify step.
 
-The wizard auto-discovers Plex servers on your network. You provide the server URL and an auth token ([how to find your Plex token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)), and pick your music library section.
+### Connecting Plex
 
-### Optional sources
+The wizard finds Plex servers on your network automatically. It needs two things:
 
-- **Soulseek** — run [slskd](https://github.com/slskd/slskd) (uncomment the `slskd` service in `docker-compose.yml`), then set its URL to `http://slskd:5030` in the wizard.
-- **Lidarr** — run [Lidarr](https://lidarr.audio/) (uncomment the `lidarr` service), set URL `http://plexify-lidarr:8686`.
-- **Telegram** — configure `api_id`/`api_hash` (from <https://my.telegram.org>) in Settings.
-- **squid.wtf** — a public Qobuz mirror; enabled by default, no setup.
+- **Which Plex server** — usually auto-filled; otherwise paste your server's address.
+- **A Plex token** — a short access code that proves it's your server. Here's the official
+  guide to [find your Plex token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
+  (it takes about a minute).
 
-### Audiobooks
+Then pick your **music library** from the dropdown, and you're done. Plexify begins syncing your
+playlists and finding missing songs.
 
-Audiobooks share the import folder with music — Plexify routes by shape (FLAC is music; m4b/mp3
-drops are books, whether that's a bare file, a folder of mp3s, a collection of m4bs, or a nested
-rip). To turn it on:
+### Turning on download sources (optional)
 
-1. Uncomment the `auto-m4b` service in `docker-compose.yml` (it merges multi-file books into
-   single chapterized m4bs).
-2. Install the [Audnexus.bundle](https://github.com/djdembeck/Audnexus.bundle) agent in Plex and
-   create a Music-type "Audiobooks" library with it (the Settings page has a create button).
-3. Enable audiobooks in **Settings › Audiobooks** and pick the Plex section.
+Out of the box, Plexify can find music through **squid.wtf**, a public source that needs no setup.
+You can add more sources for better coverage — each is optional and independent:
 
-Books the matcher isn't sure about park in the app's review queue — file the guess with one
-click, pick a candidate, type author/title yourself, or discard. Deleting from the shelf moves
-the book folder to an in-library trash directory; nothing is ever permanently deleted. The full
-runbook (folder layout, Plex agent settings, recovery) is in
-[docs/AUDIOBOOKS.md](docs/AUDIOBOOKS.md).
+- **Soulseek** (peer-to-peer) — the most reliable source for hard-to-find tracks. To use it, open
+  `docker-compose.yml` and remove the `#` marks in front of the `slskd` service block, restart
+  with `docker compose up -d`, then in Plexify's **Settings** set the Soulseek URL to
+  `http://slskd:5030`.
+- **Telegram** — enable it in **Settings** by pasting an `api_id` and `api_hash` from
+  [my.telegram.org](https://my.telegram.org).
+- **Lidarr** — if you already run [Lidarr](https://lidarr.audio/) for album management, uncomment
+  the `lidarr` service in `docker-compose.yml` and point Plexify at `http://plexify-lidarr:8686`
+  in Settings.
 
-## Deployment modes
+You can turn these on any time later — you don't have to decide now.
 
-Plexify runs in two shapes. **They are the same code** — one engine image, one downloader
-daemon — and the *only* difference is where the engine lives. In both, the downloader runs on
-the machine with your storage; the engine always talks to it over HTTP.
+### Adding audiobooks (optional)
 
-### 1. Single-host ("all on the NAS") — recommended
+Plexify can organize audiobooks too, into their own Plex library. Music and audiobooks share one
+**drop folder** — you just drop a book in and Plexify figures out the rest (a single file, a
+folder of MP3 chapters, whatever) — it merges the chapters into one file, matches it against
+Audible for the cover, narrator, and description, and files it away.
 
-Engine + downloader + web UI on one machine. This is the Quick Start above:
+To turn it on:
+
+1. In `docker-compose.yml`, remove the `#` marks in front of the `auto-m4b` service block (this
+   is the piece that stitches multi-file books into one). Restart with `docker compose up -d`.
+2. In Plex, install the [Audnexus](https://github.com/djdembeck/Audnexus.bundle) metadata agent
+   (it fetches audiobook covers and details), then create a new **Music-type** library called
+   "Audiobooks" that uses it. Plexify's **Settings → Audiobooks** page has a button that creates
+   this library for you.
+3. Flip on **Settings → Audiobooks** and choose that library.
+
+If Plexify isn't sure which book a file is, it waits in a **review queue** on the Audiobooks page
+so it never guesses wrong — you confirm it with one click, pick from suggestions, or type the
+title yourself. Deleting a book just moves it to a recoverable trash folder; nothing is ever
+permanently erased. For the deeper details, see [docs/AUDIOBOOKS.md](docs/AUDIOBOOKS.md).
+
+## Where to run it
+
+Most people should run everything on one machine (the setup above). But if you keep your media on
+a low-power NAS and want the app to feel snappy, you can split Plexify in two — **it's the same
+program either way.**
+
+### Option A — All on one machine (recommended)
+
+This is exactly what the Getting Started steps set up: Plexify's brain, its downloader, and the
+web page all run together on the machine with your music. Just use the web page at your
+`PUBLIC_BASE_URL`. Nothing more to do.
+
+### Option B — Downloader on the NAS, app on your Mac
+
+The downloader (which needs to sit next to your storage) stays on the NAS, while the main app and
+its interface move to your Mac as a **native macOS app**. Same features, just two pieces:
 
 ```bash
-docker compose up -d --build          # starts both services on this host
+# On the NAS (where your storage is) — run only the downloader:
+docker compose up -d --build plexify-downloader
+
+# On your Mac — build and open the native app:
+bash macapp/build.sh && open Plexify.app
 ```
 
-Use the built-in **web UI** at `PUBLIC_BASE_URL`.
+The Mac app then talks to the NAS's downloader over your network. Full details (folder sharing,
+addresses, and settings) are in [docs/MACOS.md](docs/MACOS.md).
 
-### 2. Split ("half on a Mac")
-
-The downloader stays on the storage host (e.g. a low-power NAS); the engine + UI move to a Mac.
-Same image, same features — just two hosts:
-
-```bash
-# on the NAS (storage host):
-docker compose up -d --build plexify-downloader     # daemon only
-
-# on the Mac — either the native app…
-bash macapp/build.sh && open Plexify.app            # see docs/MACOS.md
-#   …or the engine in Docker, pointed at the NAS:
-NAS_DOWNLOADER_HOSTS=http://<nas-ip>:8788 docker compose up -d --build plexify
-```
-
-The Mac gets a **native SwiftUI app** (same pages + features as the web UI, including the
-agreement gate); the NAS just downloads. See [`docs/MACOS.md`](docs/MACOS.md) for the split
-details (SMB/paths/env).
-
-> Both the web UI and the native macOS app are front-ends to the **same engine and JSON API** —
-> every feature (sync, autofill, library, the agreement gate) is identical between them.
+> The web page and the Mac app are two windows into the **same Plexify** — every feature works
+> identically in both.
 
 ## Configuration
 

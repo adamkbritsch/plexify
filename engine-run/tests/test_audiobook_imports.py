@@ -833,5 +833,52 @@ class TestSubsetTitleTrap(unittest.TestCase):
                       g.get("alts") or [])
 
 
+
+
+class TestSeriesStampedRips(unittest.TestCase):
+    """The re-dropped replacement books (2026-07-10): series rips put the SERIES in the album
+    tag and/or the filename's middle segment — the real title hid elsewhere. All three shapes
+    matched 'Red Rising' at 100 and were saved only by the dest-conflict guard."""
+
+    def test_author_series_bookn_title_filename(self):
+        g = ab.infer_book_guess("Pierce Brown - Red Rising, Book 5 - Dark Age.m4b", {})
+        self.assertEqual((g["title"], g["author"]), ("Dark Age", "Pierce Brown"))
+
+    def test_series_stamped_tags_use_track_title(self):
+        g = ab.infer_book_guess("Iron Gold (Unabridged).m4b",
+                                {"album": "Red Rising", "artist": "Pierce Brown",
+                                 "albumartist": "Pierce Brown",
+                                 "title": "Red Rising Book 04 - Iron Gold"})
+        self.assertEqual(g["title"], "Iron Gold")
+        self.assertEqual(g["author"], "Pierce Brown")
+        self.assertIn({"title": "Red Rising", "author": "Pierce Brown"}, g.get("alts") or [])
+
+    def test_dark_age_real_tags(self):
+        g = ab.infer_book_guess("Pierce Brown - Red Rising, Book 5 - Dark Age.m4b",
+                                {"album": "Red Rising", "artist": "Pierce Brown",
+                                 "albumartist": "Pierce Brown",
+                                 "title": "Red Rising Book 05 - Dark Age"})
+        self.assertEqual(g["title"], "Dark Age")
+
+    def test_chapter_junk_track_title_not_used(self):
+        # nam='Part 1 - Chapter 1' does NOT contain the album -> album stays primary
+        g = ab.infer_book_guess("Book 1 - The Hunger Games.m4b",
+                                {"album": "The Hunger Games: Special Edition",
+                                 "artist": "Suzanne Collins",
+                                 "title": "Part 1 - Chapter 1"})
+        self.assertEqual(g["title"], "The Hunger Games: Special Edition")
+
+    def test_ladder_tries_colon_stripped_title(self):
+        calls = []
+        def fake_search(title, author=None, session=None):
+            calls.append(title)
+            return [] if ":" in title else [{"asin": "B1", "title": title, "authors": [author]}]
+        with mock.patch.object(ab, "audible_search", side_effect=fake_search):
+            cands = ab._search_ladder({"title": "The Hunger Games: Special Edition",
+                                       "author": "Suzanne Collins"})
+        self.assertTrue(cands)
+        self.assertIn("The Hunger Games", calls)
+
+
 if __name__ == "__main__":
     unittest.main()

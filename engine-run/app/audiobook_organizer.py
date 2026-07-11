@@ -118,6 +118,7 @@ _READ_BY_RE = re.compile(r"[\s,(\-–—]*\b(?:read|narrated)\s+by\s+[^-–—]{
 # contain 'by' ('Death by Chocolate', 'Seduced by the Highlander', 'History by the Numbers')
 # don't lose their tail to a fake author. Deliberately CASE-SENSITIVE: IGNORECASE would let
 # lowercase words ('the Highlander') satisfy the [A-Z] guard.
+_SERIES_BOOK_RE = re.compile(r"^.{2,40}?,?\s+book\s+\d+(?:\.\d+)?$", re.IGNORECASE)
 _BY_AUTHOR_RE = re.compile(
     r"^(?P<t>.{3,}?)\s+[bB]y\s+(?P<a>[A-Z][\w.'’-]+(?:\s+[A-Z][\w.'’-]+){1,3})"
     r"(?:[\s,]+[Bb]ook\s+\d+(?:\.\d+)?)?\s*$")
@@ -164,6 +165,7 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
 
     t_album = (tags.get("album") or "").strip()
     t_artist = (tags.get("albumartist") or tags.get("artist") or "").strip()
+    t_title = (tags.get("title") or "").strip()
     if t_album:
         alb_clean, alb_part, alb_total = strip_part_info(t_album)
         if alb_part and "part" not in extra:
@@ -173,6 +175,20 @@ def infer_book_guess(path: str, tags: Optional[dict] = None) -> dict:
         tag_guess = {"title": _clean_fragment(_normalize_name(alb_clean, camel=False)) or t_album,
                      "author": _clean_fragment(_normalize_name(t_artist, camel=False)) or None,
                      **extra}
+        # Series-stamped rips: album='Red Rising' (the SERIES) while the track title carries
+        # the real book — 'Red Rising Book 04 - Iron Gold'. When the track title CONTAINS the
+        # album plus more, derive the actual title from it; the album reading stays as a
+        # fallback interpretation.
+        if (t_title and len(t_title) > len(t_album) + 3
+                and t_album.lower() in t_title.lower()):
+            remainder = re.sub(re.escape(t_album), " ", t_title, flags=re.IGNORECASE)
+            remainder = re.sub(r"(?i)^[\s\-–—:,]*(?:book\s*\d+(?:\.\d+)?)?[\s\-–—:,]*",
+                               "", remainder.strip())
+            derived = _clean_fragment(_normalize_name(remainder, camel=False))
+            if len(derived) >= 3:
+                tag_guess["alts"] = [{"title": tag_guess["title"],
+                                      "author": tag_guess.get("author")}]
+                tag_guess["title"] = derived
         # Series rips often stamp the SERIES as the album tag: 'Iron Gold by Pierce Brown
         # Book 4.m4b' tagged album='Red Rising' matched (and got FILED AS) 'Red Rising',
         # clobbering the real one — observed live 2026-07-10. When the filename parses into a
@@ -204,6 +220,17 @@ def _guess_from_name(departed: str, extra: dict) -> dict:
     if m_by:
         return {"title": _clean_fragment(m_by.group("t")),
                 "author": _clean_fragment(m_by.group("a")), **extra}
+    # 'Author - Series, Book N - Title' ('Pierce Brown - Red Rising, Book 5 - Dark Age'):
+    # a middle segment that is '<series>, Book N' is series metadata — the real title is what
+    # FOLLOWS it. Without this the series name became the title and matched the wrong book
+    # (stopped only by the dest-conflict guard; live re-drop 2026-07-10).
+    segs = base.split(" - ")
+    if len(segs) >= 3 and _SERIES_BOOK_RE.match(segs[1].strip()):
+        author_c = _clean_fragment(segs[0])
+        title_c = _clean_fragment(" - ".join(segs[2:]))
+        if author_c and title_c and len(author_c.split()) <= 4:
+            return {"title": title_c, "author": author_c, **extra}
+
     # 'Author - Title (Year) - Narrator': only drop a trailing segment as the narrator when a
     # (year) in the KEPT segments corroborates the Author-Title-Year reading. Without that
     # anchor, 'Author - Series - Title' rips ('Stephen King - The Dark Tower - The Waste
@@ -362,6 +389,7 @@ def _search_ladder(guess: dict) -> list:
     tried = set()
     rungs = [(title, author),
              (re.sub(r"\([^)]*\)", " ", title).strip(), author),
+             (title.split(":")[0].strip(), author),
              (re.sub(r"\bA\s+[A-Z][\w' ]{2,40}\s+Novel\s*$", " ", title).strip(), author)]
     if author:
         rungs.append((title, None))

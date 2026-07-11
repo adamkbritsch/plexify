@@ -57,6 +57,7 @@ final class PlexifyStore: ObservableObject {
         guard !polling else { return }
         polling = true
         Task { await self.loadAttestStatus() }   // eager: show the legal gate immediately if needed
+        Task { await self.resumePickerOnLaunch() }
         Task {
             var tick = 0
             while self.polling {
@@ -88,6 +89,34 @@ final class PlexifyStore: ObservableObject {
         await loadAttestStatus()
         await refreshLive(); await refreshHealth(); await refreshPicker(); await refreshNas(fresh: true)
         await refreshRewardHead()
+    }
+
+    // On the Mac the engine runs with the scheduler OFF (UI-only), so nothing fires the
+    // acquisition picker on its own — the user had to click Resume every session. Fire it once
+    // per launch: wait for the engine to boot, and only when the legal gate is satisfied (never
+    // auto-acquire before attestation). /api/picker/resume best-effort resumes the scheduled job
+    // AND fires an immediate picker_tick, so it works on this scheduler-off deployment.
+    private var pickerResumedOnLaunch = false
+    func resumePickerOnLaunch() async {
+        guard !pickerResumedOnLaunch else { return }
+        for _ in 0..<45 {                        // ~45s for gunicorn to come up
+            if attestation == nil { await loadAttestStatus() }
+            if let a = attestation {
+                guard a.attested == true else {
+                    NSLog("Plexify: launch-resume skipped — not attested"); return
+                }
+                break
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        guard attestation?.attested == true else {
+            NSLog("Plexify: launch-resume gave up — engine/attest not ready"); return
+        }
+        pickerResumedOnLaunch = true
+        NSLog("Plexify: launch-resume firing /api/picker/resume")
+        await post("/api/picker/resume")
+        lastAction = "Picker resumed"
+        await refreshPicker()
     }
 
     // Legal-use gate: the whole UI is blocked until attested.

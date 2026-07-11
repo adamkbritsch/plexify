@@ -636,7 +636,7 @@
 {# ════════ Music import ════════ #}
 <div class="page-head" style="margin-top:2.6em; border-top:1px solid rgba(255,255,255,0.08); padding-top:1.6em">
   <h2 style="font-size:19px; margin:0 0 4px">Music import</h2>
-  <p class="muted small" style="margin:0">Drop music into a folder and Plexify sorts the good FLAC into your library (even if it isn't a liked song), discarding the junk. Closes the gaps the automated sources can't get — see <a href="{{ url_for('main.unmatched_view') }}">Unmatched</a> for what to grab.</p>
+  <p class="muted small" style="margin:0">Drop FLAC into the folder and Plexify sorts it into your library (even if it isn't a liked song), discarding the junk. Music must be FLAC — anything m4b/mp3-shaped in the shared folder is treated as an audiobook. Closes the gaps the automated sources can't get — see <a href="{{ url_for('main.unmatched_view') }}">Unmatched</a> for what to grab.</p>
 </div>
 <section class="card" id="music-import-card">
   <h2>Music import <span class="smart-badge">{% if get_config('manual_import_enabled','0') == '1' %}ON{% else %}OFF{% endif %}</span></h2>
@@ -645,7 +645,7 @@
     <span>Enable music import <small class="muted">— auto-scans the folder every couple of minutes</small></span>
   </label>
   <label class="field">
-    <span class="field-label">Import folder <small class="muted">— the shared plexify-imports drop; audiobook-shaped items (m4b/mp3, no FLAC) are auto-routed to the audiobook pipeline</small></span>
+    <span class="field-label">Import folder <small class="muted">— the shared plexify-imports drop; FLAC is music, m4b/mp3 drops route to the audiobook pipeline</small></span>
     <input type="text" id="mi-path" autocomplete="off"
            value="{{ get_config('manual_import_path','/Volumes/MediaVolume3/plexify-imports') }}"
            placeholder="/Volumes/MediaVolume3/plexify-imports">

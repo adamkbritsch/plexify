@@ -269,12 +269,12 @@ struct SettingsView: View {
 
     private var musicImportCard: some View {
         Section2(title: "Music import", badge: importEnabled ? "ON" : "OFF",
-                 help: "Drop music into a folder and Plexify sorts the good FLAC into your library (even if it isn't a liked song), discarding the junk. This closes the gaps the automated sources can't get — see the Unmatched tab's suggestions for what to grab.") {
+                 help: "Drop FLAC into the folder and Plexify sorts it into your library (even if it isn't a liked song), discarding the junk. Music must be FLAC — anything m4b/mp3-shaped in the shared folder is treated as an audiobook. Closes the gaps the automated sources can't get — see the Unmatched tab's suggestions for what to grab.") {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle(isOn: $importEnabled) {
                     label2("Enable music import", "auto-scans the import folder every couple of minutes")
                 }.toggleStyle(.switch).tint(PX.plex)
-                FieldLabel("Import folder", help: "the shared plexify-imports drop (audiobooks are auto-routed to their own pipeline)")
+                FieldLabel("Import folder", help: "the shared plexify-imports drop — FLAC is music; m4b/mp3 drops route to the audiobook pipeline")
                 pxTF($importPath, "/Volumes/MediaVolume3/plexify-imports")
                 Toggle(isOn: $importDelete) {
                     label2("Delete unnecessary music", "permanently delete junk / lossy / duplicates instead of quarantining them to _unnecessary/. Off = recoverable.")

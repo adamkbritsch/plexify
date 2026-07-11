@@ -1103,6 +1103,13 @@ _COMPANION_EXTS = {".pdf", ".epub"}
 # Subfolders that are discs of ONE book (flatten + merge) rather than distinct books:
 # CD1 / Disc 2 / Disk_3 / Part 1 / D2 / bare numbers.
 _DISC_DIR_RE = re.compile(r"^(?:cd|disc|disk|part|d)?[\s_-]*\d+$", re.IGNORECASE)
+# A trailing track/chapter number on a filename stem: 'Lolita - 66', 'Book Chapter 03',
+# 'Title Pt 2', 'Title 007', 'Title (12)'. Used to tell a chaptered SINGLE book (many files
+# sharing one stem) from a COLLECTION of distinct books.
+_TRACK_SUFFIX_RE = re.compile(
+    r"[\s\-_.]*(?:cd|disc|disk|part|pt|chapter|chap|ch|track|trk|tr|section|sec|vol|volume|book|"
+    r"disc\s*part|)[\s\-_.#]*\(?\[?\d{1,4}\)?\]?\s*(?:of\s*\d+)?$",
+    re.IGNORECASE)
 _PARTIAL_PREFIX = ".plexify-partial-"
 _route_size_memo: dict = {}
 _ROUTE_LOCK = threading.Lock()
@@ -1243,6 +1250,44 @@ def _route_ready_file(src: str, untagged: str, book_name: str, out: dict) -> str
     return book_dir
 
 
+def _chapter_stem(stem: str) -> str:
+    s = _TRACK_SUFFIX_RE.sub("", stem or "").strip(" -_.")
+    return " ".join(s.split()).lower()
+
+
+def _chaptered_single_book(paths: list) -> bool:
+    """True when a folder's m4b files are numbered CHAPTERS of ONE book ('Lolita - 01' …
+    'Lolita - 73'), not a COLLECTION of distinct books. Rule: 3+ files whose stems collapse to
+    a single stem once the trailing chapter number is stripped, and at least one file actually
+    carried a number (so 3 genuinely-different titles that merely clean to nothing don't count).
+    A chaptered book must be MERGED, never split into per-chapter 'books' (the Lolita bug)."""
+    if len(paths) < 3:
+        return False
+    stems, numbered = set(), 0
+    for p in paths:
+        raw = os.path.splitext(os.path.basename(p))[0]
+        stripped = _chapter_stem(raw)
+        if stripped != raw.strip(" -_.").lower():
+            numbered += 1
+        stems.add(stripped)
+    stems.discard("")
+    return len(stems) == 1 and numbered >= len(paths) - 1
+
+
+def _route_chaptered_book(ready: list, intake: str, name: str, out: dict) -> None:
+    """Move all chapter m4bs into one intake folder so auto-m4b merges them into a single book
+    (filenames become chapters). Atomic publish via a hidden build dir."""
+    dst = _free_slot(intake, _safe(name))
+    build = os.path.join(intake, _PARTIAL_PREFIX + os.path.basename(dst))
+    shutil.rmtree(build, ignore_errors=True)
+    os.makedirs(build)
+    for f in sorted(ready):
+        shutil.move(f, os.path.join(build, os.path.basename(f)))
+    os.rename(build, dst)
+    _log_ab_move("audiobook_route:chaptered", os.path.dirname(ready[0]) if ready else "", dst)
+    out["to_convert"] += 1
+
+
 def _leftovers_only_sidecars(path: str) -> bool:
     for dp, dns, fns in os.walk(path):
         for fn in fns:
@@ -1265,8 +1310,8 @@ def _route_folder(src: str, intake: str, untagged: str, out: dict,
             elif ext in _CONVERT_EXTS:
                 convert.append(os.path.join(dp, fn))
 
-    # finished m4bs leave first — one m4b takes the folder's name, several are a collection
-    # of individual books named after their files
+    # finished m4bs leave first — one m4b takes the folder's name; several are EITHER a
+    # collection of distinct books (each its own) OR numbered chapters of ONE book (merge)
     if len(ready) == 1 and not convert:
         stem = os.path.splitext(os.path.basename(ready[0]))[0]
         book = name if len(_normalize_name(name)) >= len(_normalize_name(stem)) else stem
@@ -1280,6 +1325,10 @@ def _route_folder(src: str, intake: str, untagged: str, out: dict,
                         _move_publish(os.path.join(dp, fn), os.path.join(book_dir, fn))
                     except OSError:
                         pass
+    elif ready and not convert and _chaptered_single_book(ready):
+        # 'Lolita - 01.m4b' … 'Lolita - 73.m4b' = ONE book split into chapter m4bs. Merge via
+        # auto-m4b instead of filing 73 separate 'books' (the Lolita bug, 2026-07-11).
+        _route_chaptered_book(ready, intake, name, out)
     else:
         for f in ready:
             _route_ready_file(f, untagged, os.path.splitext(os.path.basename(f))[0], out)

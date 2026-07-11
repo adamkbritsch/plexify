@@ -950,5 +950,54 @@ class TestDurationAwareEditionPick(unittest.TestCase):
         self.assertIsNone(best)
 
 
+
+
+class TestChapteredSingleBook(unittest.TestCase):
+    """A folder of numbered chapter m4bs is ONE book to merge, not a collection to split
+    (the Lolita bug: 'Lolita - 01.m4b' … 'Lolita - 73.m4b' filed as 73 separate books)."""
+
+    def test_detects_chaptered_book(self):
+        paths = [f"/x/Lolita - {i:02d}.m4b" for i in range(1, 74)]
+        self.assertTrue(ab._chaptered_single_book(paths))
+
+    def test_detects_chapter_word(self):
+        paths = [f"/x/The Odyssey Chapter {i}.m4b" for i in range(1, 6)]
+        self.assertTrue(ab._chaptered_single_book(paths))
+
+    def test_collection_of_distinct_books_is_not_chaptered(self):
+        paths = ["/x/The Martian.m4b", "/x/Artemis.m4b", "/x/Project Hail Mary.m4b"]
+        self.assertFalse(ab._chaptered_single_book(paths))
+
+    def test_two_files_not_enough(self):
+        self.assertFalse(ab._chaptered_single_book(["/x/Book - 01.m4b", "/x/Book - 02.m4b"]))
+
+    def test_routes_chaptered_folder_as_one_merge(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "Vladimir Nabokov - Lolita"); os.makedirs(src)
+            for i in range(1, 6):
+                open(os.path.join(src, f"Lolita - {i:02d}.m4b"), "wb").write(b"x" * 1000)
+            intake = os.path.join(d, "recentlyadded"); os.makedirs(intake)
+            untagged = os.path.join(d, "untagged"); os.makedirs(untagged)
+            out = {"to_untagged": 0, "to_convert": 0, "errors": 0}
+            ab._route_folder(src, intake, untagged, out)
+            self.assertEqual(out["to_convert"], 1)          # merged, not split
+            self.assertEqual(out["to_untagged"], 0)
+            book = os.path.join(intake, "Vladimir Nabokov - Lolita")
+            self.assertTrue(os.path.isdir(book))
+            self.assertEqual(len([f for f in os.listdir(book) if f.endswith(".m4b")]), 5)
+
+    def test_real_collection_still_splits(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "Andy Weir Collection"); os.makedirs(src)
+            for t in ("The Martian", "Artemis", "Project Hail Mary"):
+                open(os.path.join(src, f"{t}.m4b"), "wb").write(b"x" * 1000)
+            intake = os.path.join(d, "recentlyadded"); os.makedirs(intake)
+            untagged = os.path.join(d, "untagged"); os.makedirs(untagged)
+            out = {"to_untagged": 0, "to_convert": 0, "errors": 0}
+            ab._route_folder(src, intake, untagged, out)
+            self.assertEqual(out["to_untagged"], 3)         # 3 distinct books
+            self.assertEqual(out["to_convert"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

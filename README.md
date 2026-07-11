@@ -42,6 +42,7 @@ Served by the engine — everything the native app does, in the browser.
 - **Multi-source acquisition** — Soulseek (P2P), squid.wtf (Qobuz hi-res), SpotiFLAC (Qobuz/Tidal/Deezer/Amazon mirrors), and Telegram — all optional, tried in your configured order, with per-source blacklisting on bad results.
 - **Album completion & quality upgrades** — fills partial albums and re-acquires lossless tracks at hi-res when available.
 - **Un-star to replace** — 5★ every placed track in Plex; un-star a wrong one and Plexify re-acquires the correct copy from a different source (opt-in).
+- **Audiobooks** — the same drop folder takes books: folders of mp3s are merged into chapterized m4bs ([auto-m4b](https://github.com/seanap/auto-m4b)), matched against Audible with a confidence gate that never guesses, tagged via [Audnexus](https://audnex.us) (cover, narrator, summary — the *edition* is picked by matching runtime to your file, so narrators come out right), and filed into a separate Plex library. Low-confidence books wait in a review queue; the app has a cover-art shelf with sorting and soft-delete.
 - **A real UI** — a fast web dashboard (library, playlists, jobs, live activity) plus an optional native macOS app.
 - **Runs itself** — a scheduler handles syncing, acquisition, organization, Plex reconciliation, and hygiene in the background.
 
@@ -66,6 +67,7 @@ Spotify ⇄ [ Plexify engine + web UI ] ⇄ Plex
 | **slskd (Soulseek)** | Optional | A Soulseek source. Without it you can still use the other sources. |
 | **Lidarr** | Optional | Album organization / quality management. |
 | **Telegram account** | Optional | Enables the Telegram source. |
+| **auto-m4b + Audnexus agent** | Optional | Only for audiobooks — see [Audiobooks](#audiobooks). |
 
 ## Quick start (Docker)
 
@@ -98,6 +100,24 @@ The wizard auto-discovers Plex servers on your network. You provide the server U
 - **Lidarr** — run [Lidarr](https://lidarr.audio/) (uncomment the `lidarr` service), set URL `http://plexify-lidarr:8686`.
 - **Telegram** — configure `api_id`/`api_hash` (from <https://my.telegram.org>) in Settings.
 - **squid.wtf** — a public Qobuz mirror; enabled by default, no setup.
+
+### Audiobooks
+
+Audiobooks share the import folder with music — Plexify routes by shape (FLAC is music; m4b/mp3
+drops are books, whether that's a bare file, a folder of mp3s, a collection of m4bs, or a nested
+rip). To turn it on:
+
+1. Uncomment the `auto-m4b` service in `docker-compose.yml` (it merges multi-file books into
+   single chapterized m4bs).
+2. Install the [Audnexus.bundle](https://github.com/djdembeck/Audnexus.bundle) agent in Plex and
+   create a Music-type "Audiobooks" library with it (the Settings page has a create button).
+3. Enable audiobooks in **Settings › Audiobooks** and pick the Plex section.
+
+Books the matcher isn't sure about park in the app's review queue — file the guess with one
+click, pick a candidate, type author/title yourself, or discard. Deleting from the shelf moves
+the book folder to an in-library trash directory; nothing is ever permanently deleted. The full
+runbook (folder layout, Plex agent settings, recovery) is in
+[docs/AUDIOBOOKS.md](docs/AUDIOBOOKS.md).
 
 ## Deployment modes
 

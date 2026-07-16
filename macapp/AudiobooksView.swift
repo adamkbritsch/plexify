@@ -71,6 +71,9 @@ struct AudiobooksView: View {
                 if st?.feature_enabled != true {
                     Text("Audiobooks are OFF — enable them in Settings › Audiobooks.")
                         .font(.system(size: 12)).foregroundStyle(PX.warn)
+                } else if st?.offline == true {
+                    Text("You appear to be offline — Plexify can't reach the NAS and has paused trying. It reconnects automatically.")
+                        .font(.system(size: 12)).foregroundStyle(PX.warn)
                 } else if st?.reachable != true {
                     Text("Organizer daemon unreachable — it runs on the NAS (plexify-downloader).")
                         .font(.system(size: 12)).foregroundStyle(PX.warn)

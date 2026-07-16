@@ -129,6 +129,7 @@
     lastStatus = d;
     const warn = $('ab-warn');
     if (d.feature_enabled !== true) { warn.textContent = 'Audiobooks are OFF — enable them in Settings.'; warn.style.display=''; }
+    else if (d.offline === true) { warn.textContent = 'You appear to be offline — Plexify can\'t reach the NAS and has paused trying. It reconnects automatically.'; warn.style.display=''; }
     else if (d.reachable !== true) { warn.textContent = 'Organizer daemon unreachable — it runs on the NAS (plexify-downloader).'; warn.style.display=''; }
     else if (d.dirs_ok !== true) { warn.textContent = 'Audiobook folders not mounted in the daemon — see docs/AUDIOBOOKS.md.'; warn.style.display=''; }
     else warn.style.display='none';

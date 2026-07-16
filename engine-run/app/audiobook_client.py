@@ -23,13 +23,16 @@ def _req(path: str, payload: dict | None = None, timeout: int = 15):
 
 def daemon_status() -> dict:
     """GET /audiobooks/status — {ok, enabled, dirs_ok, dropped, converting, untagged, review,
-    organized_total, recent, library_visible} or {reachable: False, error}."""
+    organized_total, recent, library_visible} or {reachable: False, offline, error}."""
     try:
         out = _req("/audiobooks/status")
         out["reachable"] = True
+        out["offline"] = False
         return out
     except Exception as e:
-        return {"reachable": False, "error": str(e)[:200]}
+        from . import nas_downloader
+        return {"reachable": False, "offline": nas_downloader.is_offline(),
+                "error": str(e)[:200]}
 
 
 def push_config() -> bool:

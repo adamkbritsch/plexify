@@ -3757,7 +3757,7 @@ def api_nas_downloader_status():
 _AB_CACHE = {"reachable": False, "enabled": False, "dirs_ok": False, "dropped": 0,
              "imports_waiting": 0, "converting": 0, "untagged": 0, "review": 0,
              "review_items": [], "converter": {}, "working_on": None,
-             "organized_total": 0, "recent": [],
+             "organized_total": 0, "recent": [], "offline": False,
              "library_visible": False, "ts": 0.0}
 _AB_REFRESHING = [False]
 
@@ -3772,7 +3772,7 @@ def _refresh_audiobook_status():
         audiobook_client.audiobook_tick()
         st = audiobook_client.daemon_status()
         for k in ("reachable", "enabled", "dirs_ok", "dropped", "imports_waiting", "converting",
-                  "untagged", "review", "review_items", "converter", "working_on",
+                  "untagged", "review", "review_items", "converter", "working_on", "offline",
                   "organized_total", "recent", "library_visible"):
             if k in st:
                 _AB_CACHE[k] = st[k]

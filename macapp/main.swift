@@ -101,10 +101,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // (e.g. LAN unreachable away from home), the next check tries the next form.
         let url = smbURLs[mountAttempt % max(1, smbURLs.count)]
         mountAttempt += 1
+        // Don't fire a futile mount when the NAS can't be reached (no network / off-LAN):
+        // a quick TCP probe to the SMB port first, so `open smb://…` doesn't spawn Finder
+        // "can't connect" churn every 90s while offline.
+        guard nasReachable(url, port: 445) else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-g", url]   // Finder + Keychain credential; -g = don't steal focus
         try? p.run()
+    }
+
+    // Quick TCP reachability probe (1.5s) to a host from an smb:// URL — used to skip futile
+    // mounts when there's no path to the NAS.
+    func nasReachable(_ smbURL: String, port: Int) -> Bool {
+        guard let host = URL(string: smbURL)?.host else { return false }
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        if sock < 0 { return true }             // can't probe → don't block the mount
+        defer { close(sock) }
+        var tv = timeval(tv_sec: 1, tv_usec: 500_000)
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM,
+                             ai_protocol: 0, ai_addrlen: 0, ai_canonname: nil,
+                             ai_addr: nil, ai_next: nil)
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, String(port), &hints, &res) == 0, let info = res else { return false }
+        defer { freeaddrinfo(res) }
+        let ok = connect(sock, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0
+        return ok
     }
 
     @objc func onWake() {

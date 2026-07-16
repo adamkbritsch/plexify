@@ -89,9 +89,54 @@ def _headers() -> dict:
     return h
 
 
+# Reachability circuit breaker. When the NAS can't be reached at all (no internet / off the
+# LAN / daemon down / Tailscale asleep), a full request would waste the whole timeout on EACH
+# host, EVERY poll (~every few seconds) — futile. So: a quick TCP-connect probe decides
+# reachability up front; if NO host answers, open the breaker and skip all NAS calls for a
+# cooldown, so the app fails instantly instead of hanging. Any success closes it immediately.
+_REACH_TIMEOUT = 1.5          # seconds for the up-front connect probe (fast fail when offline)
+_BREAKER_COOLDOWN = 30.0      # seconds to skip NAS calls after all hosts are unreachable
+_breaker = {"until": 0.0}
+
+
+def is_offline() -> bool:
+    """True while the reachability breaker is open (NAS unreachable) — callers can skip work
+    and the UI can say 'offline' instead of 'daemon unreachable'."""
+    import time as _t
+    return _t.time() < _breaker["until"]
+
+
+def _host_reachable(base: str) -> bool:
+    import socket
+    from urllib.parse import urlparse
+    u = urlparse(base)
+    host, port = u.hostname, (u.port or (443 if u.scheme == "https" else 80))
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=_REACH_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
+class NasOfflineError(OSError):
+    """Raised (without any network attempt) while the reachability breaker is open."""
+
+
 def _req(path: str, payload: dict | None = None, timeout: int = 10):
+    import time as _t
+    if _t.time() < _breaker["until"]:
+        # breaker open — don't even try; caller catches this and shows offline/unreachable
+        raise NasOfflineError("NAS unreachable — skipping (offline)")
+    bases = _base_urls()
+    reachable = [b for b in bases if _host_reachable(b)]
+    if not reachable:
+        _breaker["until"] = _t.time() + _BREAKER_COOLDOWN
+        raise NasOfflineError("NAS unreachable on %d host(s) — pausing calls for %ds"
+                              % (len(bases), int(_BREAKER_COOLDOWN)))
     last = None
-    for base in _base_urls():
+    for base in reachable:
         try:
             req = urllib.request.Request(
                 base + path,
@@ -100,9 +145,13 @@ def _req(path: str, payload: dict | None = None, timeout: int = 10):
                 method="POST" if payload is not None else "GET",
             )
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode())
+                out = json.loads(r.read().decode())
+                _breaker["until"] = 0.0     # a live response closes the breaker
+                return out
         except Exception as e:  # noqa: BLE001 — any transport error -> try next host
             last = e
+    # reachable at the TCP level but the request failed (500, slow op, mid-restart) — do NOT
+    # open the offline breaker; that's a request problem, not an offline one.
     raise last or OSError("no downloader host reachable")
 
 

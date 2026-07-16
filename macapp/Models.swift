@@ -439,6 +439,7 @@ struct ConvertingBookDTO: Codable {
 
 struct AudiobooksStatusDTO: Codable {
     var reachable: Bool?
+    var offline: Bool?           // NAS unreachable (no network) — calls paused
     var enabled: Bool?           // daemon-side flag
     var feature_enabled: Bool?   // engine-side flag (the settings toggle)
     var dirs_ok: Bool?

@@ -122,7 +122,14 @@ def _run_spotiflac(
     downloader = SpotiflacDownloader(opts)
 
     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
-        downloader.run(spotify_url)
+        # SpotiFLAC ≤1.2 exposed a blocking `run()`; ≥1.3 replaced it with async `run_async()`.
+        # Support BOTH so a version bump (or a container recreate that reverts the pin) can't
+        # break acquisition.
+        if hasattr(downloader, "run"):
+            downloader.run(spotify_url)
+        else:
+            import asyncio
+            asyncio.run(downloader.run_async(spotify_url))
 
     return stdout_buf.getvalue(), stderr_buf.getvalue()
 

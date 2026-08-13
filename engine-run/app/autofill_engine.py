@@ -1115,7 +1115,6 @@ def _is_provider_outage(error_str: str | None) -> bool:
       - "[tidal] UNAVAILABLE: All 15 Tidal APIs failed (of 15 total, 0 in cooldown)."
       - "[amazon] UNAVAILABLE: spotbye2 API returned 503: Service unavailable"
       - "All providers failed after 1 attempt(s)"
-      - "spotiflac timed out after 90s"
 
     If TWO OR MORE provider names appear with UNAVAILABLE, this is global.
     A single provider being down is normal — only declare outage if multiple are.
@@ -1130,9 +1129,11 @@ def _is_provider_outage(error_str: str | None) -> bool:
     down_count = sum(1 for p in provider_names if (p in e and "unavailable" in e))
     if down_count >= 2:
         return True
-    # SpotiFLAC's own timeout signal
-    if "spotiflac timed out" in e:
-        return True
+    # NOT a timeout. A wall-clock timeout says nothing about whether the mirrors are up — since
+    # SpotiFLAC 1.7 a download routinely finishes and then sits in teardown probing for a browser
+    # session it will never get, so the clock runs out on a SUCCESSFUL fetch. Treating that as a
+    # global outage made the picker overwrite the row's note, skip the remaining sources
+    # (Telegram never got a turn), and give up on an album no source had actually refused.
     return False
 
 

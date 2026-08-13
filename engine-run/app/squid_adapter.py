@@ -66,6 +66,32 @@ def _set_break(seconds: int) -> None:
         pass
 
 
+def host_unresolvable() -> bool:
+    """Is squid's host currently missing from DNS?
+
+    squid.wtf's Qobuz gateway has gone NXDOMAIN before and come back. While it is gone every
+    acquisition pays a DNS failure per attempt for a source that cannot possibly answer — but
+    disabling squid would mean never noticing its return. So: check DNS (cheap, cached by the
+    resolver), and let the caller open a timed break instead. The break expires on its own, which
+    re-probes, which means squid switches itself back on the moment the host resolves again.
+    """
+    import socket
+    from urllib.parse import urlparse
+    host = urlparse(_base()).hostname
+    if not host:
+        return False
+    try:
+        socket.getaddrinfo(host, None)
+        return False
+    except socket.gaierror:
+        return True
+
+
+# How long to stand down when the host isn't in DNS at all. Long enough that a multi-hour outage
+# costs a handful of lookups, short enough that recovery is picked up the same evening.
+DNS_BREAK_SECONDS = 1800
+
+
 def _clear_break() -> None:
     try:
         from .db import set_config
@@ -212,6 +238,13 @@ def acquire_track(artist=None, title=None, dest_dir=None, flac_only=True, timeou
     if _bu:
         out["error"] = "squid on cooldown %dm" % max(1, int((_bu - time.time()) / 60))
         return out
+    # Host gone from DNS entirely: stand down for a while rather than fail once per album. The
+    # break expires and re-checks, so squid comes back by itself when the host does.
+    if host_unresolvable():
+        _set_break(DNS_BREAK_SECONDS)
+        out["error"] = "squid host not in DNS — retrying in %dm" % (DNS_BREAK_SECONDS // 60)
+        log.warning("squid: %s does not resolve; standing down %ds", _base(), DNS_BREAK_SECONDS)
+        return out
     title = (title or "").strip()
     artist = (artist or "").strip()
     if not title:
@@ -323,6 +356,11 @@ def acquire(spotify_url=None, *, track_ids=None, artist=None, album=None, sample
     out = {"success": False, "paths": [], "source": "squid", "provider": "squid·qobuz", "error": None}
     if not is_enabled() or _in_break():
         out["error"] = "squid unavailable (disabled or cooldown)"
+        return out
+    if host_unresolvable():
+        _set_break(DNS_BREAK_SECONDS)
+        out["error"] = "squid host not in DNS — retrying in %dm" % (DNS_BREAK_SECONDS // 60)
+        log.warning("squid: %s does not resolve; standing down %ds", _base(), DNS_BREAK_SECONDS)
         return out
     deadline = time.time() + timeout_seconds
     paths = []

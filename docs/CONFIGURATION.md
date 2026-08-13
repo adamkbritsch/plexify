@@ -18,6 +18,8 @@ variables. Nothing here needs editing by hand for a normal Docker install — th
 | `STAGING_ROOT` | `/downloads_music/staging` | daemon | Where the daemon stages verified files. |
 | `SYNC_INTERVAL_MINUTES` | `5` | engine | Playlist sync cadence. |
 | `SECRET_KEY` | auto-generated | engine | Flask session key (persisted to `$DATA_DIR/.secret_key`). |
+| `PLEXIFY_START_SCHEDULER` | `1` | engine | `0` serves the UI only: **no background jobs at all** — no liked-songs sync, no acquisition, no reconcile. The macOS app uses this when it hosts its own engine. Leave it on for any always-on install. |
+| `PLEXIFY_ENGINE_URL` | (unset) | macOS app | Point the app at an engine running elsewhere (e.g. `http://your-nas:8787`). When set, the app is a pure front end: no engine, no mounts, no local work. |
 
 ## Config keys (set via the wizard / Settings, stored in the DB)
 

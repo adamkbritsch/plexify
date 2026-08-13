@@ -48,7 +48,7 @@ Served by the engine — everything the native app does, in the browser.
 
 ## How it works
 
-Plexify is a Python (Flask + APScheduler) engine that talks to your Plex server and the Spotify Web API, backed by SQLite. The engine **decides what to acquire and organizes everything**; a small **downloader daemon** does the actual downloading near your storage. Both ship in one Docker image. The web UI is served by the engine; the native macOS app is an optional front-end that talks to the same JSON API.
+Plexify is a Python (Flask + APScheduler) engine that talks to your Plex server and the Spotify Web API, backed by SQLite. The engine **decides what to acquire, downloads it, and organizes everything**, on a schedule — so it needs to be running for anything to happen. Optionally, a separate **downloader daemon** (same Docker image) can do the downloading instead, for setups where the engine is not next to the storage. The web UI is served by the engine; the native macOS app is an optional front end onto the same JSON API.
 
 ```
 Spotify ⇄ [ Plexify engine + web UI ] ⇄ Plex
@@ -206,34 +206,41 @@ permanently erased. For the deeper details, see [docs/AUDIOBOOKS.md](docs/AUDIOB
 
 ## Where to run it
 
-Most people should run everything on one machine (the setup above). But if you keep your media on
-a low-power NAS and want the app to feel snappy, you can split Plexify in two — **it's the same
-program either way.**
+**Run the engine on the machine that holds your music, and leave it running.** That is the whole
+recommendation. Everything else — the web page, the macOS app — is just a window onto it.
 
-### Option A — All on one machine (recommended)
+The engine is the part that does the work: it syncs your Spotify likes on a timer, decides what is
+missing, acquires it, files it, and tells Plex. Those are *scheduled* jobs, so they only happen
+while the engine is up. On a NAS or server that is always on, that is continuous and invisible.
+On a laptop it is not — a laptop that sleeps is an engine that stops, and the symptom is silent:
+nothing errors, music just quietly stops appearing.
 
-This is exactly what the Getting Started steps set up: Plexify's brain, its downloader, and the
-web page all run together on the machine with your music. Just use the web page at your
-`PUBLIC_BASE_URL`. Nothing more to do.
+### The optional macOS app
 
-### Option B — Downloader on the NAS, app on your Mac
-
-The downloader (which needs to sit next to your storage) stays on the NAS, while the main app and
-its interface move to your Mac as a **native macOS app**. Same features, just two pieces:
+Plexify ships a native macOS app. It is a **front end, not a second copy of Plexify** — point it
+at your engine and it starts no processes, mounts no shares, and touches no files. Close it and
+the engine keeps syncing and downloading without you.
 
 ```bash
-# On the NAS (where your storage is) — run only the downloader:
-docker compose up -d --build plexify-downloader
-
-# On your Mac — build and open the native app:
-bash macapp/build.sh && open Plexify.app
+bash macapp/build.sh
+PLEXIFY_ENGINE_URL=http://your-nas:8787 open Plexify.app
 ```
 
-The Mac app then talks to the NAS's downloader over your network. Full details (folder sharing,
-addresses, and settings) are in [docs/MACOS.md](docs/MACOS.md).
+That is the whole setup. The app shows which engine it is attached to in **Settings → Engine**, and
+says so plainly if it cannot reach it rather than leaving yesterday's numbers on screen. To make it
+permanent, set `PLEXIFY_ENGINE_URL` in your login environment — see
+[docs/MACOS.md](docs/MACOS.md).
 
-> The web page and the Mac app are two windows into the **same Plexify** — every feature works
-> identically in both.
+> The web page and the Mac app are two windows into the **same Plexify** — same database, same
+> settings, every feature identical. Use either, or both.
+
+### Running the engine on the Mac instead
+
+If you have no always-on machine, the Mac app can host the engine itself: leave `PLEXIFY_ENGINE_URL`
+unset and it launches one, mounts your library, and keeps them alive while it runs. This works, but
+know the trade-off — in this mode the app starts the engine with `PLEXIFY_START_SCHEDULER=0`, so
+the background jobs do **not** run on a timer; syncing and acquisition happen when you ask for
+them. It is a fine way to try Plexify out, and a poor way to leave it running.
 
 ## Configuration
 

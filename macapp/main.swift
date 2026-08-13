@@ -241,14 +241,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func reloadUI() { Task { await store.refreshAll() } }
 
-    // Close (red button / ⌘W) and a plain user ⌘Q both MINIMIZE — the app keeps running in the
-    // background (engine + polling stay alive). A system logout/shutdown/restart, or a SIGTERM
-    // from a deploy/relaunch, still quits it normally.
+    // Closing means different things in the two modes.
+    //
+    // HOSTED: this process IS Plexify — quitting it stops the engine and everything stops with
+    // it. So close (red button / ⌘W) and a plain user ⌘Q MINIMIZE instead, keeping the engine and
+    // polling alive. A system logout/shutdown/restart, or a SIGTERM from a deploy, still quits.
+    //
+    // CLIENT: this is a window onto an engine running elsewhere, which keeps syncing and
+    // acquiring whether or not this app exists. There is nothing to keep alive, so closing just
+    // closes — no minimize-instead surprise, no background process lingering after you quit it.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if PlexifyStore.engineIsRemote { return true }
         sender.miniaturize(nil)
         return false
     }
     func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
+        if PlexifyStore.engineIsRemote { return .terminateNow }
         // Let the SYSTEM through: a logout/shutdown/restart quit event carries a 'why?' attribute.
         // Only a plain user ⌘Q (no quit reason) is converted to minimize.
         if let evt = NSAppleEventManager.shared().currentAppleEvent,
@@ -266,7 +274,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pk.arguments = ["-f", "gunicorn.*app.main:app"]
         try? pk.run()
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
+    // Client mode: the window IS the app, so closing it quits rather than leaving an invisible
+    // process in the Dock doing nothing. Hosted mode keeps running — the engine lives here.
+    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool {
+        PlexifyStore.engineIsRemote
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { window.makeKeyAndOrderFront(nil); window.deminiaturize(nil) }
         return true

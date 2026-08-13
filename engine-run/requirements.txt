@@ -15,7 +15,15 @@ mutagen==1.47.0
 # every tick with ModuleNotFoundError: No module named 'httpx', 2026-05-30).
 httpx==0.28.1
 tqdm==4.67.3
-SpotiFLAC @ git+https://github.com/ShuShuzinhuu/SpotiFLAC-Module-Version.git@main
+# PINNED, not @main. Tracking main is how this broke: the API was renamed under us
+# (1.1 `run()` -> 1.3 `run_async()`), and 1.7 added a provider that needs a browser.
+# Upgrade deliberately, test a real download, then bump this. 1.7.3 verified working
+# (Qobuz, ~10s/track) on 2026-08-13; 1.1.2 could no longer fetch from any mirror.
+SpotiFLAC==1.7.3
+# SpotiFLAC imports pydoll at package import time (via its Amazon provider) but does not
+# declare it, so without this the whole library fails to import — same undeclared-dep
+# trap as httpx/tqdm above. Plexify never drives the browser; the import just needs it.
+pydoll-python==2.9.0
 # Telegram source: drive @BeatSpotBot (FLAC) as a USER session (bots can't DM bots).
 Telethon==1.36.0
 # Smart update: Claude (Opus) self-heals broken SpotiFLAC git-main updates. Only called

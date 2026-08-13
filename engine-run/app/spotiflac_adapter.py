@@ -55,7 +55,12 @@ class AcquireResult:
 
 # ── internals ────────────────────────────────────────────────────────────────
 
-_DEFAULT_SERVICES = ["qobuz", "deezer", "amazon", "tidal"]  # Tidal last — mirrors flaky
+# Amazon is deliberately NOT in this list. Since SpotiFLAC 1.7 its provider mints a signed
+# session by driving a headless browser through a Cloudflare Turnstile challenge — automated
+# bot-detection solving, which this project does not do. It is also pure cost: with no browser
+# present the attempt just burns ~90s per download before giving up, while qobuz answers in
+# ~10s. Leave it out; add it back only if upstream offers a path that doesn't defeat a CAPTCHA.
+_DEFAULT_SERVICES = ["qobuz", "deezer", "tidal"]
 
 # Providers that appear in SpotiFLAC's stdout banner, e.g.:
 #   📡  QOBUZ  ·  api.zarz.moe  ·  27
@@ -118,7 +123,20 @@ def _run_spotiflac(
     )
     if qobuz_token:
         _opts_kwargs["qobuz_token"] = qobuz_token
-    opts = DownloadOptions(**_opts_kwargs)
+    # Newer SpotiFLAC gained options that older ones reject outright, and this library changes
+    # shape often (1.1 -> 1.7 renamed the entry point and added a browser provider). Only pass
+    # what the installed version actually accepts, so an upgrade or a rollback can't break
+    # acquisition. Lyrics/enrichment are off because they reach for the same browser path the
+    # Amazon provider does, for metadata Plexify tags itself anyway.
+    try:
+        import inspect as _inspect
+        _accepted = set(_inspect.signature(DownloadOptions.__init__).parameters)
+    except (TypeError, ValueError):
+        _accepted = set(getattr(DownloadOptions, "__dataclass_fields__", {}))
+    for _k, _v in (("embed_lyrics", False), ("enrich_metadata", False)):
+        if _k in _accepted:
+            _opts_kwargs[_k] = _v
+    opts = DownloadOptions(**{k: v for k, v in _opts_kwargs.items() if not _accepted or k in _accepted})
     downloader = SpotiflacDownloader(opts)
 
     with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
@@ -201,6 +219,10 @@ def acquire(
             stdout_text, stderr_text = future.result(timeout=timeout_seconds)
             success = True
         except FuturesTimeoutError:
+            # Not necessarily a failure. SpotiFLAC can finish the actual download in seconds and
+            # then sit in teardown (a provider probing for a browser session it will never get),
+            # so the files can already be on disk when we stop waiting. The file check below is
+            # the real verdict; only report a timeout if nothing landed.
             error_msg = f"spotiflac timed out after {timeout_seconds}s"
             log.warning("acquire: %s — url=%s", error_msg, spotify_url)
     except Exception as exc:                          # broad catch — never raise
@@ -244,6 +266,14 @@ def acquire(
         success = False
         error_msg = "SpotiFLAC completed without producing any FLAC/MP3 files"
         log.warning("acquire: no output files for url=%s (dest_dir=%s)", spotify_url, dest_dir)
+    elif not success and new_files:
+        # We stopped waiting, but the audio is here. Judge by what is on disk, not by whether the
+        # library got around to returning — otherwise a completed download is thrown away and the
+        # row is re-queued to download the same thing again.
+        success = True
+        log.info("acquire: %d file(s) landed despite %s — counting as success",
+                 len(new_files), error_msg)
+        error_msg = None
 
     provider = _parse_provider(combined)
 

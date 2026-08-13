@@ -47,7 +47,18 @@ final class PlexifyStore: ObservableObject {
     // transient UI signal
     @Published var lastAction: String?
 
-    let base = "http://127.0.0.1:8787"
+    // Which engine this app talks to. Default is a local one the app launches itself; set
+    // PLEXIFY_ENGINE_URL to point at an engine running elsewhere (e.g. on the NAS, where it
+    // can run 24/7 with the scheduler on instead of only while this Mac is awake). When it is
+    // set, the app is a pure client — it launches no engine of its own, so there is exactly
+    // one scheduler and one database.
+    static let engineBase: String = {
+        let v = (ProcessInfo.processInfo.environment["PLEXIFY_ENGINE_URL"] ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        return v.isEmpty ? "http://127.0.0.1:8787" : v.hasSuffix("/") ? String(v.dropLast()) : v
+    }()
+    static var engineIsRemote: Bool { engineBase != "http://127.0.0.1:8787" }
+    let base = PlexifyStore.engineBase
     private var polling = false
     var dashboardVisible = true
 

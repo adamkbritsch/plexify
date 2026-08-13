@@ -59,6 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func startEngine() {
+        // Pointed at an engine somewhere else (PLEXIFY_ENGINE_URL) — this app is a pure client.
+        // Launching a second engine here would mean two schedulers and two databases racing for
+        // the same library, so don't.
+        if PlexifyStore.engineIsRemote {
+            NSLog("Plexify: using remote engine at %@ — not starting a local one", PlexifyStore.engineBase)
+            return
+        }
         // kill any stale engine on our port first
         let pk = Process()
         pk.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
@@ -249,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
+        guard !PlexifyStore.engineIsRemote else { return }   // never kill someone else's engine
         engine?.terminate()
         let pk = Process()
         pk.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")

@@ -8,7 +8,7 @@ variables. Nothing here needs editing by hand for a normal Docker install — th
 
 | Var | Default | Used by | Purpose |
 |---|---|---|---|
-| `DATA_DIR` | `/data` | engine, daemon | SQLite DB + secret key + token caches. Keep private. |
+| `DATA_DIR` | `/data` | engine, daemon | SQLite DB + secret key + token caches. Keep private. **Put this on an SSD/NVMe, not an HDD** — the DB is in WAL mode and written constantly; on a spinning disk its random writes contend with media reads and surface as Plex stuttering. |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8787` | engine | Builds the Spotify OAuth redirect (`…/auth/spotify/callback`). **Set to the address you actually reach the UI at.** |
 | `MUSIC_DIR` | — | compose | HOST path to your Plex music library (mounted to `/music`). |
 | `DOWNLOADS_DIR` | — | compose | HOST path to a downloads/staging workdir (mounted to `/downloads`). |

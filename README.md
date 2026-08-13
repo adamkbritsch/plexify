@@ -64,6 +64,7 @@ Spotify ⇄ [ Plexify engine + web UI ] ⇄ Plex
 | **Plex Media Server** | Yes | You almost certainly already run one. Plexify reads + writes playlists and files FLACs into a library folder. |
 | **Spotify Developer app** | Yes | Free, ~2 minutes — you use *your own* credentials. See [Connecting Spotify](#connecting-spotify). |
 | **Docker + Docker Compose** | Recommended | The easiest way to run it. |
+| **An SSD for Plexify's data dir** | Strongly recommended | `DATA_DIR` holds a SQLite database in WAL mode that is written constantly. Put it on an **SSD/NVMe, not a spinning disk** — on an HDD its small random writes queue behind your media reads, which shows up as Plex stuttering during playback. The *music library* itself is fine on spinning disks; it is only the database that needs the SSD. |
 | **slskd (Soulseek)** | Optional | A Soulseek source. Without it you can still use the other sources. |
 | **Lidarr** | Optional | Album organization / quality management. |
 | **Telegram account** | Optional | Enables the Telegram source. |
@@ -208,6 +209,13 @@ permanently erased. For the deeper details, see [docs/AUDIOBOOKS.md](docs/AUDIOB
 
 **Run the engine on the machine that holds your music, and leave it running.** That is the whole
 recommendation. Everything else — the web page, the macOS app — is just a window onto it.
+
+**Put its data directory on an SSD.** The engine keeps a SQLite database (WAL mode) that it
+writes to continuously — every sync, every queue change, every placed track. On a spinning disk
+those small random writes contend with the large sequential reads Plex is doing to stream, and the
+symptom is Plex stuttering while Plexify works. Point `DATA_DIR` at an SSD or NVMe volume and the
+contention disappears; your music can stay on the big slow disks, because that side is sequential
+and cached. On a NAS with an NVMe cache slot, that slot is the right home for it.
 
 The engine is the part that does the work: it syncs your Spotify likes on a timer, decides what is
 missing, acquires it, files it, and tells Plex. Those are *scheduled* jobs, so they only happen

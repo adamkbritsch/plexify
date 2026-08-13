@@ -286,8 +286,12 @@ scheduler.add_job(
 # filler) so an un-star can signal "wrong file". Placer rides recently-added albums;
 # the detector debounces un-stars and fires the dispute pipeline. Both no-op when
 # autostar_manage_enabled != "1"; only run at all when PLEXIFY_START_SCHEDULER=1.
+# Every 5 minutes, not 20. Until a placed track is starred it cannot be disputed — un-starring
+# something that Plexify never starred is invisible to the detector — so the gap between "song
+# arrives" and "song is starred" is a window where a bad file can't be reported. The pass is cheap
+# in steady state (already-recorded tracks are skipped by ratingKey), so run it often.
 scheduler.add_job(
-    autostar_place_tick, "interval", minutes=20,
+    autostar_place_tick, "interval", minutes=5,
     id="autostar_place", max_instances=1, coalesce=True, misfire_grace_time=300,
 )
 scheduler.add_job(

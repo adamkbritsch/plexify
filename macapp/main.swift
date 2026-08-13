@@ -80,54 +80,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // Keep the NAS library mounted over SMB — it drops on sleep AND whenever the Mac
     // changes networks (leaving home kills the LAN path; only the tailnet survives).
-    // PLEXIFY_SMB_URL takes a COMMA-SEPARATED list of URLs tried in rotation — put the
-    // fast LAN form first and the Tailscale-IP form second so the mount self-heals both
-    // at home and away. Checked on launch, on wake, and every 90s (a dead mount makes
-    // the whole engine lie: empty feeds, zero pending counts, failed imports).
+    // PLEXIFY_SMB_URL takes a COMMA-SEPARATED list of URLs; every check probes them in
+    // order and mounts the first USABLE one, so the fast LAN form is used at home and the
+    // Tailscale form takes over away from home — within one 90s tick, not one form per
+    // tick. Checked on launch, on wake, and every 90s (a dead mount makes the whole
+    // engine lie: empty feeds, zero pending counts, failed imports).
     let smbURLs = (ProcessInfo.processInfo.environment["PLEXIFY_SMB_URL"] ?? "smb://your-nas.local/Music")
         .split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-    let mountPoint = ProcessInfo.processInfo.environment["PLEXIFY_SMB_MOUNT"] ?? "/Volumes/Music"
-    var mountAttempt = 0
+    nonisolated let mountPoint = ProcessInfo.processInfo.environment["PLEXIFY_SMB_MOUNT"] ?? "/Volumes/Music"
+    // Set only while a mount attempt is in flight — the 90s timer must not stack attempts
+    // on top of a mount that is simply still negotiating.
+    var mounting = false
+    // url -> unix time until which that URL is skipped after a failed mount.
+    nonisolated(unsafe) var mountBackoff: [String: Double] = [:]
 
     func ensureMount() {
         // Only attempt an SMB mount when one is explicitly configured — otherwise a fresh
-        // install (or a non-split setup) would spam macOS "can't connect" dialogs.
+        // install (or a non-split setup) would try to reach a NAS that isn't there.
         guard ProcessInfo.processInfo.environment["PLEXIFY_SMB_URL"] != nil else { return }
-        if FileManager.default.fileExists(atPath: mountPoint + "/plexify-music") {
-            mountAttempt = 0
-            return
+        if FileManager.default.fileExists(atPath: mountPoint + "/plexify-music") { return }
+        if mounting { return }
+        mounting = true
+        let urls = smbURLs
+        // Everything below runs OFF the main thread: the reachability probe blocks for up to
+        // 1.5s per address and the mount itself takes seconds, and a UI app must not stall
+        // for that on a 90s timer.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            defer { DispatchQueue.main.async { self.mounting = false } }
+            // Take the first form that answers on 445 and isn't in failure backoff. The TCP
+            // probe is what keeps us completely silent while offline — no path to the NAS
+            // means no attempt at all, rather than a retry that can only end in an error
+            // panel.
+            let pass = ProcessInfo.processInfo.environment["PLEXIFY_SMB_PASS"] ?? ""
+            let now = Date().timeIntervalSince1970
+            guard let url = urls.first(where: {
+                (self.mountBackoff[$0] ?? 0) < now && self.nasReachable($0, port: 445)
+            }) else { return }
+            // MOUNT SILENTLY — never hand the URL to Finder. `open smb://…` delegates to
+            // Finder, which puts up "Connect to Server" / "There was a problem connecting"
+            // panels and steals focus. AppleScript's `mount volume` drives the same NetAuth
+            // machinery directly: it creates the mount point under /Volumes (which is
+            // root-owned, so plain mount_smbfs can't) and resolves the password out of the
+            // login Keychain, with no interface at any point. PLEXIFY_SMB_PASS supplies the
+            // password explicitly instead (fed over stdin, never argv, so it can't leak into
+            // `ps`) for a share macOS has no saved credential for.
+            var target = url
+            if !pass.isEmpty, let at = url.range(of: "@"), let scheme = url.range(of: "://") {
+                let user = String(url[scheme.upperBound..<at.lowerBound])
+                let esc = pass.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? pass
+                target = String(url[..<scheme.upperBound]) + user + ":" + esc + String(url[at.lowerBound...])
+            }
+            let script = "try\nmount volume \"\(target)\"\nend try\n"
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-"]                       // read the script from stdin, not argv
+            let pipe = Pipe()
+            p.standardInput = pipe
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            do {
+                try p.run()
+                pipe.fileHandleForWriting.write(Data(script.utf8))
+                try? pipe.fileHandleForWriting.close()
+                // WATCHDOG. A mount that has neither succeeded nor failed inside 45s is waiting
+                // on something only a human can answer — a credential panel for a share whose
+                // password macOS can't resolve is the realistic case. Cancel the request rather
+                // than let it sit on the user's screen, and let the backoff below stop us
+                // raising it again every 90 seconds.
+                let deadline = Date().addingTimeInterval(45)
+                while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.5) }
+                if p.isRunning {
+                    p.terminate()
+                    NSLog("Plexify: mount of %@ timed out after 45s — cancelled", url)
+                }
+            } catch {
+                NSLog("Plexify: mount failed to launch: \(error)")
+            }
+            // Back a failing URL off for 10 minutes so a share that can't mount (wrong
+            // credential, share renamed, NAS refusing) is retried occasionally instead of on
+            // every 90s tick — and so the next tick moves on to the next URL in the list.
+            if FileManager.default.fileExists(atPath: self.mountPoint + "/plexify-music") {
+                self.mountBackoff[url] = 0
+            } else {
+                self.mountBackoff[url] = Date().timeIntervalSince1970 + 600
+                NSLog("Plexify: mount of %@ did not take — backing off 10 min", url)
+            }
         }
-        // Rotate through the configured URLs: if the previous attempt didn't take
-        // (e.g. LAN unreachable away from home), the next check tries the next form.
-        let url = smbURLs[mountAttempt % max(1, smbURLs.count)]
-        mountAttempt += 1
-        // Don't fire a futile mount when the NAS can't be reached (no network / off-LAN):
-        // a quick TCP probe to the SMB port first, so `open smb://…` doesn't spawn Finder
-        // "can't connect" churn every 90s while offline.
-        guard nasReachable(url, port: 445) else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-g", url]   // Finder + Keychain credential; -g = don't steal focus
-        try? p.run()
     }
 
     // Quick TCP reachability probe (1.5s) to a host from an smb:// URL — used to skip futile
-    // mounts when there's no path to the NAS.
-    func nasReachable(_ smbURL: String, port: Int) -> Bool {
+    // mounts when there's no path to the NAS. Tries EVERY address the name resolves to: a
+    // hardcoded AF_INET socket silently failed on .local names, which mDNS resolves to a
+    // link-local IPv6 address, so the LAN form was always judged unreachable and every mount
+    // fell through to the (much slower) Tailscale form even at home.
+    nonisolated func nasReachable(_ smbURL: String, port: Int) -> Bool {
         guard let host = URL(string: smbURL)?.host else { return false }
-        let sock = socket(AF_INET, SOCK_STREAM, 0)
-        if sock < 0 { return true }             // can't probe → don't block the mount
-        defer { close(sock) }
-        var tv = timeval(tv_sec: 1, tv_usec: 500_000)
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM,
                              ai_protocol: 0, ai_addrlen: 0, ai_canonname: nil,
                              ai_addr: nil, ai_next: nil)
         var res: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, String(port), &hints, &res) == 0, let info = res else { return false }
+        guard getaddrinfo(host, String(port), &hints, &res) == 0 else { return false }
         defer { freeaddrinfo(res) }
-        let ok = connect(sock, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0
-        return ok
+        var node = res
+        while let info = node {
+            let sock = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
+            if sock >= 0 {
+                var tv = timeval(tv_sec: 1, tv_usec: 500_000)
+                setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+                let ok = connect(sock, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0
+                close(sock)
+                if ok { return true }
+            }
+            node = info.pointee.ai_next
+        }
+        return false
     }
 
     @objc func onWake() {

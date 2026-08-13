@@ -59,15 +59,26 @@ final class PlexifyStore: ObservableObject {
     // set, the app is a pure client — it launches no engine of its own, so there is exactly
     // one scheduler and one database.
     static let engineBase: String = {
-        let v = (ProcessInfo.processInfo.environment["PLEXIFY_ENGINE_URL"] ?? "")
-            .trimmingCharacters(in: .whitespaces)
-        return v.isEmpty ? "http://127.0.0.1:8787" : v.hasSuffix("/") ? String(v.dropLast()) : v
+        // Trim newlines too: this usually arrives from `launchctl setenv` in a shell script, where
+        // a stray newline is easy to introduce and would otherwise produce a URL that never builds
+        // — turning on client mode and then failing every request with nothing on screen.
+        var v = (ProcessInfo.processInfo.environment["PLEXIFY_ENGINE_URL"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if v.isEmpty { return "http://127.0.0.1:8787" }
+        while v.hasSuffix("/") { v = String(v.dropLast()) }
+        // A host with no scheme ("nas:8787") is what people actually type; assume http rather than
+        // silently producing an unusable base.
+        if URLComponents(string: v)?.scheme == nil { v = "http://" + v }
+        return v
     }()
     static var engineIsRemote: Bool { engineBase != "http://127.0.0.1:8787" }
     /// Host (and port, when non-default) of the engine, for showing the user where their data
     /// actually lives — "this Mac" when it's local.
     static var engineLabel: String {
-        guard engineIsRemote, let u = URL(string: engineBase), let h = u.host else { return "this Mac" }
+        guard engineIsRemote else { return "this Mac" }
+        // Never fall back to "this Mac" for a remote engine we merely failed to parse — naming the
+        // wrong host is worse than showing the raw value.
+        guard let u = URL(string: engineBase), let h = u.host else { return engineBase }
         return u.port.map { "\(h):\($0)" } ?? h
     }
     /// 8s is plenty for a loopback engine, but a remote one adds a network hop and answers while
@@ -479,7 +490,15 @@ final class PlexifyStore: ObservableObject {
         guard let url = URL(string: base + path) else { return nil }
         do {
             var req = URLRequest(url: url); req.timeoutInterval = PlexifyStore.readTimeout
-            let (data, _) = try await URLSession.shared.data(for: req)
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            // A socket that answers is not an engine that works. A 5xx (gunicorn up, app broken or
+            // still booting) used to count as "reachable" and left a confident green dot over
+            // stale numbers — the precise illusion this flag exists to prevent.
+            if let code = (resp as? HTTPURLResponse)?.statusCode, code >= 500 {
+                engineReachable = false
+                NSLog("Plexify: GET %@ -> HTTP %d", path, code)
+                return nil
+            }
             let out = try JSONDecoder().decode(T.self, from: data)
             engineReachable = true
             return out
@@ -509,8 +528,16 @@ final class PlexifyStore: ObservableObject {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        do { _ = try await URLSession.shared.data(for: req); return true }
-        catch { return false }
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            if let code = (resp as? HTTPURLResponse)?.statusCode, code >= 500 { engineReachable = false; return false }
+            engineReachable = true
+            return true
+        } catch {
+            if error is URLError { engineReachable = false }
+            NSLog("Plexify: POST %@ failed: %@", path, error.localizedDescription)
+            return false
+        }
     }
 
     // Like postJSON, but HONEST: the engine replies 200 with {"ok": false, "error": ...} on
@@ -525,8 +552,17 @@ final class PlexifyStore: ObservableObject {
             let (data, _) = try await URLSession.shared.data(for: req)
             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             let ok = (obj?["ok"] as? Bool) ?? false
+            engineReachable = true
             return (ok, ok ? nil : (obj?["error"] as? String ?? "request failed"))
-        } catch { return (false, error.localizedDescription) }
+        } catch {
+            // Say what actually went wrong. Reporting a connectivity failure as a generic error
+            // makes the UI blame the user's credentials for the engine being unreachable.
+            if error is URLError {
+                engineReachable = false
+                return (false, "couldn't reach Plexify at \(PlexifyStore.engineLabel)")
+            }
+            return (false, error.localizedDescription)
+        }
     }
 
     // POST a JSON body and decode the JSON response (used by the availability probe).
@@ -551,7 +587,15 @@ final class PlexifyStore: ObservableObject {
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.setValue("fetch", forHTTPHeaderField: "X-Requested-With")
         req.httpBody = body.data(using: .utf8)
-        do { _ = try await URLSession.shared.data(for: req); return true }
-        catch { return false }
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            if let code = (resp as? HTTPURLResponse)?.statusCode, code >= 500 { engineReachable = false; return false }
+            engineReachable = true
+            return true
+        } catch {
+            if error is URLError { engineReachable = false }
+            NSLog("Plexify: POST %@ failed: %@", path, error.localizedDescription)
+            return false
+        }
     }
 }

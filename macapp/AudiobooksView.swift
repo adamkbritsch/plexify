@@ -99,9 +99,14 @@ struct AudiobooksView: View {
                     }.buttonStyle(DashCtlButtonStyle())
                         .disabled(st?.feature_enabled != true || st?.reachable != true
                                   || store.audiobookOrganizeMsg == "starting…")
-                    Button { openDropFolder() } label: {
-                        Label("Open drop folder", systemImage: "folder")
-                    }.buttonStyle(DashCtlButtonStyle())
+                    // The drop folder is a path on the ENGINE's host. Opening it in this Mac's
+                    // Finder only works when the engine is this Mac, so hide the control rather
+                    // than offer a button that opens the wrong thing (or nothing).
+                    if !PlexifyStore.engineIsRemote {
+                        Button { openDropFolder() } label: {
+                            Label("Open drop folder", systemImage: "folder")
+                        }.buttonStyle(DashCtlButtonStyle())
+                    }
                 }
                 HStack(spacing: 12) {
                     stage("Dropped", st?.dropped, help: "In the drop folder, waiting for auto-m4b")

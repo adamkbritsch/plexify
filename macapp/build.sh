@@ -43,7 +43,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <!-- The engine is self-hosted and reached over plain HTTP on a private address (localhost, a
        LAN IP, or a tailnet IP via PLEXIFY_ENGINE_URL) — there is no public hostname to get a
        certificate for. App Transport Security blocks cleartext by default, and URLSession fails
-       silently when it does, so without this the app shows an empty UI and no error. -->
+       silently when it does, so without this the app shows an empty UI and no error.
        Do NOT add NSAllowsLocalNetworking alongside: when that key is present macOS IGNORES
        NSAllowsArbitraryLoads, and "local networking" does not cover a tailnet (100.64/10)
        address — which silently reinstates the block for exactly the setup this is here for. -->
@@ -55,6 +55,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>Plexify</string>
 </dict></plist>
 PLIST
+# An Info.plist Apple's parser rejects does NOT fail loudly — the app still launches, but with no
+# bundle identifier (so codesign synthesizes one, TCC grants and UserDefaults move to a different
+# domain) and no ATS exception. A stray "-->" inside a comment shipped exactly that. Never again:
+if ! plutil -lint "$APP/Contents/Info.plist" >/dev/null; then
+  echo "ERROR: generated Info.plist is not a valid property list — refusing to build" >&2
+  plutil -lint "$APP/Contents/Info.plist" >&2 || true
+  exit 1
+fi
 cp "$BIN" "$APP/Contents/MacOS/Plexify"
 
 # 3. Sign. Prefer a stable self-signed identity if present (survives rebuilds); else ad-hoc.

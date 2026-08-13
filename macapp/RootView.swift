@@ -125,10 +125,29 @@ struct PlexifyRootView: View {
     var body: some View {
         PX.bg.ignoresSafeArea()
             .overlay {
+                // The banner sits OUTSIDE the attestation gate deliberately. The likeliest moment
+                // to be unable to reach the engine is the first request of all — and attestation
+                // is that request, so gating the banner on it meant the one case that most needed
+                // an explanation showed an endless spinner instead.
+                VStack(spacing: 0) {
+                    EngineUnreachableBanner()
+                    gatedContent
+                }
+            }
+            .environment(\.colorScheme, .dark)
+            .foregroundStyle(PX.text)
+            .onChange(of: page) { _, newValue in
+                store.dashboardVisible = (newValue == .dashboard)
+                Task { await onEnter(newValue) }
+            }
+            .task { await onEnter(.dashboard) }
+    }
+
+    @ViewBuilder
+    private var gatedContent: some View {
                 if store.attestation?.attested == true {
                     VStack(spacing: 0) {
                         TopBar(page: $page)
-                        EngineUnreachableBanner()
                         ScrollView {
                             Group {
                                 switch page {
@@ -151,14 +170,6 @@ struct PlexifyRootView: View {
                     // still checking → the gate view shows a brief loading state.
                     AttestationView()
                 }
-            }
-            .environment(\.colorScheme, .dark)
-            .foregroundStyle(PX.text)
-            .onChange(of: page) { _, newValue in
-                store.dashboardVisible = (newValue == .dashboard)
-                Task { await onEnter(newValue) }
-            }
-            .task { await onEnter(.dashboard) }
     }
 
     // Load a page's data when it becomes visible.

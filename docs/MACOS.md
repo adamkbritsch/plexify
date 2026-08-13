@@ -29,6 +29,28 @@ defaults to `com.plexify.app`.
 | `PLEXIFY_SMB_URL` | `smb://your-nas.local/Music` | SMB share to mount (split mode); comma-separated list = fallbacks |
 | `PLEXIFY_SMB_MOUNT` | `/Volumes/Music` | local mount point |
 | `PLEXIFY_SMB_PASS` | *(unset)* | share password — only needed if it isn't in your login Keychain |
+| `PLEXIFY_ENGINE_URL` | *(unset)* | talk to an engine running elsewhere; the app then runs nothing locally |
+
+### Two ways to run it
+
+**Hosted engine (default).** The app launches the engine itself and keeps the library mounted for
+it. Everything lives on this Mac — and so nothing happens while the Mac is asleep or the app is
+closed. Note that the app starts the engine with `PLEXIFY_START_SCHEDULER=0`, so in this mode the
+background jobs do *not* run on a timer; acquisition happens when you ask for it.
+
+**Client (`PLEXIFY_ENGINE_URL` set).** The app becomes a front end and nothing else: it starts no
+engine, mounts no shares, spawns no processes, and never pokes a job at launch. The engine runs
+wherever you point it — ideally on the machine that holds the storage, where it can run all the
+time with its scheduler on. Closing the app pauses nothing.
+
+```bash
+PLEXIFY_ENGINE_URL=http://your-nas:8787 open -a Plexify
+```
+
+Two things matter when the engine is remote. The window is a *view* — if it can't reach the engine
+it says so in a banner rather than leaving the last poll on screen looking live. And the settings
+you see belong to the engine's host, not to this Mac, so the paths in them are that machine's
+paths.
 
 Packaging a self-contained `.app` (bundling the engine + venv) is planned.
 

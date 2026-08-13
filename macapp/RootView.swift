@@ -55,10 +55,40 @@ struct TopBar: View {
 }
 
 struct StatusDot: View {
+    @EnvironmentObject var store: PlexifyStore
     let overall: String?
     var body: some View {
-        Dot(color: healthColor(overall), size: 10)
-            .help("System status: \(overall ?? "unknown")")
+        // While the engine is unreachable the health colour is a memory, not a reading — show it
+        // as unknown rather than a confident green from the last successful poll.
+        Dot(color: store.engineReachable ? healthColor(overall) : PX.muted, size: 10)
+            .help(store.engineReachable
+                  ? "System status: \(overall ?? "unknown") · engine \(PlexifyStore.engineLabel)"
+                  : "Can't reach the engine at \(PlexifyStore.engineLabel)")
+    }
+}
+
+// Everything on every page is the engine's data. If we can't reach it, say so plainly instead of
+// leaving the last poll on screen looking live — a stale dashboard is indistinguishable from a
+// working one, which is how this app once sat dead for six weeks without anyone noticing.
+struct EngineUnreachableBanner: View {
+    @EnvironmentObject var store: PlexifyStore
+    var body: some View {
+        if !store.engineReachable {
+            HStack(spacing: 10) {
+                Dot(color: PX.warn, size: 8)
+                Text("Can't reach Plexify at \(PlexifyStore.engineLabel) — showing the last data received. Nothing below is live.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(PX.text)
+                Spacer()
+                Button("Retry") { Task { await store.refreshAll() } }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(PX.plex)
+            }
+            .padding(.horizontal, 24).padding(.vertical, 10)
+            .background(PX.warn.opacity(0.12))
+            .overlay(alignment: .bottom) { Rectangle().fill(PX.line).frame(height: 1) }
+        }
     }
 }
 
@@ -98,6 +128,7 @@ struct PlexifyRootView: View {
                 if store.attestation?.attested == true {
                     VStack(spacing: 0) {
                         TopBar(page: $page)
+                        EngineUnreachableBanner()
                         ScrollView {
                             Group {
                                 switch page {

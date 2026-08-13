@@ -127,6 +127,15 @@ struct SettingsView: View {
         Section2(title: "Plex & Spotify",
                  help: "The two accounts Plexify syncs between. Each connects on its own setup page; the path below tells Plexify how YOUR Plex server sees the shared music folder.") {
             VStack(alignment: .leading, spacing: 12) {
+                // Where the work actually happens. Worth stating outright: when the engine runs
+                // elsewhere, this window is only a view of it — closing the Mac doesn't pause
+                // anything, and these settings belong to that host, not this one.
+                statusLine("Engine", ok: store.engineReachable,
+                           detail: store.engineReachable
+                                   ? (PlexifyStore.engineIsRemote
+                                      ? "\(PlexifyStore.engineLabel) — runs on its own, this app is just the view"
+                                      : "this Mac — runs only while Plexify is open")
+                                   : "unreachable at \(PlexifyStore.engineLabel)")
                 statusLine("Spotify", ok: store.settings?.spotify_authed,
                            detail: store.settings?.spotify_authed == true ? "connected" : "not connected")
                 statusLine("Plex", ok: store.settings?.plex_token_set,

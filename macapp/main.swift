@@ -19,16 +19,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)   // dark mode only
-        ensureMount()
-        // Periodic mount self-heal — launch/wake hooks miss network hops (leaving home,
-        // VPN flips), and a silently-dead mount corrupts every metric the engine serves.
-        Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
-            self?.ensureMount()
+        // CLIENT MODE (PLEXIFY_ENGINE_URL set): this app is a front end and nothing else. No
+        // engine process, no SMB mount, no scheduled work of any kind — the engine owns all of
+        // that on its own host, next to the storage. Everything below this branch exists purely
+        // to keep a LOCAL engine alive, so none of it should run when the engine is elsewhere.
+        if PlexifyStore.engineIsRemote {
+            NSLog("Plexify: client mode — engine at %@", PlexifyStore.engineBase)
+        } else {
+            ensureMount()
+            // Periodic mount self-heal — launch/wake hooks miss network hops (leaving home,
+            // VPN flips), and a silently-dead mount corrupts every metric the engine serves.
+            Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+                self?.ensureMount()
+            }
+            startEngine()
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(onWake),
             name: NSWorkspace.didWakeNotification, object: nil)
-        startEngine()
         buildMenu()
 
         let rect = NSRect(x: 0, y: 0, width: 1200, height: 820)
@@ -58,14 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.start()
     }
 
+    // Launch and own a LOCAL engine. Only called in local mode — in client mode a second engine
+    // would mean two schedulers and two databases racing for one library.
     func startEngine() {
-        // Pointed at an engine somewhere else (PLEXIFY_ENGINE_URL) — this app is a pure client.
-        // Launching a second engine here would mean two schedulers and two databases racing for
-        // the same library, so don't.
-        if PlexifyStore.engineIsRemote {
-            NSLog("Plexify: using remote engine at %@ — not starting a local one", PlexifyStore.engineBase)
-            return
-        }
         // kill any stale engine on our port first
         let pk = Process()
         pk.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
@@ -205,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func onWake() {
-        ensureMount()
+        if !PlexifyStore.engineIsRemote { ensureMount() }
         Task { await store.refreshAll() }
     }
 

@@ -47,6 +47,12 @@ final class PlexifyStore: ObservableObject {
     // transient UI signal
     @Published var lastAction: String?
 
+    // Can we currently reach the engine? Every number on every page comes from it, so when this
+    // is false the UI is showing the last thing it heard, not the truth — and it has to say so.
+    // Plexify once sat dead for six weeks partly because a dashboard full of stale zeros looked
+    // identical to a dashboard full of real ones.
+    @Published var engineReachable = true
+
     // Which engine this app talks to. Default is a local one the app launches itself; set
     // PLEXIFY_ENGINE_URL to point at an engine running elsewhere (e.g. on the NAS, where it
     // can run 24/7 with the scheduler on instead of only while this Mac is awake). When it is
@@ -58,6 +64,16 @@ final class PlexifyStore: ObservableObject {
         return v.isEmpty ? "http://127.0.0.1:8787" : v.hasSuffix("/") ? String(v.dropLast()) : v
     }()
     static var engineIsRemote: Bool { engineBase != "http://127.0.0.1:8787" }
+    /// Host (and port, when non-default) of the engine, for showing the user where their data
+    /// actually lives — "this Mac" when it's local.
+    static var engineLabel: String {
+        guard engineIsRemote, let u = URL(string: engineBase), let h = u.host else { return "this Mac" }
+        return u.port.map { "\(h):\($0)" } ?? h
+    }
+    /// 8s is plenty for a loopback engine, but a remote one adds a network hop and answers while
+    /// it is busy acquiring — the heavier reads (the reward feed) were timing out at 8s and
+    /// leaving the page blank.
+    static var readTimeout: TimeInterval { engineIsRemote ? 20 : 8 }
     let base = PlexifyStore.engineBase
     private var polling = false
     var dashboardVisible = true
@@ -102,13 +118,18 @@ final class PlexifyStore: ObservableObject {
         await refreshRewardHead()
     }
 
-    // On the Mac the engine runs with the scheduler OFF (UI-only), so nothing fires the
-    // acquisition picker on its own — the user had to click Resume every session. Fire it once
-    // per launch: wait for the engine to boot, and only when the legal gate is satisfied (never
-    // auto-acquire before attestation). /api/picker/resume best-effort resumes the scheduled job
-    // AND fires an immediate picker_tick, so it works on this scheduler-off deployment.
+    // Only for a LOCAL engine, which runs with the scheduler OFF (UI-only): nothing there fires
+    // the acquisition picker on its own, so the user had to click Resume every session. Fire it
+    // once per launch, after the engine boots and only once the legal gate is satisfied (never
+    // auto-acquire before attestation). /api/picker/resume resumes the scheduled job AND fires an
+    // immediate picker_tick, so it works on a scheduler-off deployment.
+    //
+    // A remote engine runs its own scheduler continuously — acquisition there does not depend on
+    // this app being open, let alone on it poking a job at launch. Doing it anyway would make
+    // opening a window a side-effecting act, which is exactly what a front end should never be.
     private var pickerResumedOnLaunch = false
     func resumePickerOnLaunch() async {
+        guard !PlexifyStore.engineIsRemote else { return }
         guard !pickerResumedOnLaunch else { return }
         for _ in 0..<45 {                        // ~45s for gunicorn to come up
             if attestation == nil { await loadAttestStatus() }
@@ -457,10 +478,25 @@ final class PlexifyStore: ObservableObject {
     private func get<T: Decodable>(_ path: String) async -> T? {
         guard let url = URL(string: base + path) else { return nil }
         do {
-            var req = URLRequest(url: url); req.timeoutInterval = 8
+            var req = URLRequest(url: url); req.timeoutInterval = PlexifyStore.readTimeout
             let (data, _) = try await URLSession.shared.data(for: req)
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch { return nil }
+            let out = try JSONDecoder().decode(T.self, from: data)
+            engineReachable = true
+            return out
+        } catch {
+            // Distinguish "the engine is not there" from "that response didn't decode". Only a
+            // transport failure means unreachable — otherwise a single malformed payload would
+            // claim the whole engine is down.
+            if let u = error as? URLError {
+                engineReachable = false
+                // Log it. This used to fail silently, which meant a client that could not reach
+                // its engine looked exactly like one with nothing to report.
+                NSLog("Plexify: GET %@ failed: %@ (code %d)", path, u.localizedDescription, u.errorCode)
+            } else {
+                NSLog("Plexify: GET %@ decode failed: %@", path, String(describing: error))
+            }
+            return nil
+        }
     }
 
     @discardableResult

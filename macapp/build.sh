@@ -40,6 +40,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>0.2</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <!-- The engine is self-hosted and reached over plain HTTP on a private address (localhost, a
+       LAN IP, or a tailnet IP via PLEXIFY_ENGINE_URL) — there is no public hostname to get a
+       certificate for. App Transport Security blocks cleartext by default, and URLSession fails
+       silently when it does, so without this the app shows an empty UI and no error. -->
+       Do NOT add NSAllowsLocalNetworking alongside: when that key is present macOS IGNORES
+       NSAllowsArbitraryLoads, and "local networking" does not cover a tailnet (100.64/10)
+       address — which silently reinstates the block for exactly the setup this is here for. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key><true/>
+  </dict>
   <key>CFBundleIconName</key><string>Plexify</string>
   <key>CFBundleIconFile</key><string>Plexify</string>
 </dict></plist>

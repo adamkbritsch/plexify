@@ -167,11 +167,18 @@ struct SourceHealthPill: View {
     let name: String
     let detail: String
     let status: String?    // green | yellow | red | unknown/nil
+    // A source that isn't working is OFF, not on fire. Red reads as "something is wrong, act now",
+    // but an unavailable download source is routine — a mirror goes down, an account logs out —
+    // and Plexify simply uses another. So a down source greys out and dims rather than shouting,
+    // which also keeps red meaningful for the things that genuinely need attention.
+    private var isDown: Bool {
+        ["red", "down", "error"].contains((status ?? "").lowercased())
+    }
     var body: some View {
         let sc = statusColorOrNil(status)
         let edge = sc ?? PX.lineStrong
         let nameColor = sc ?? PX.text
-        let detailColor = (sc == PX.danger) ? PX.danger : PX.muted
+        let detailColor = PX.muted
         HStack(spacing: 9) {
             Dot(color: sc ?? PX.muted, size: 8)
             Text(name.uppercased()).font(.system(size: 11, weight: .semibold)).tracking(0.8)
@@ -183,13 +190,14 @@ struct SourceHealthPill: View {
         .padding(.horizontal, 13).padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(RoundedRectangle(cornerRadius: PX.chipRadius).strokeBorder(edge, lineWidth: 1))
+        .opacity(isDown ? 0.55 : 1)
         .help(detail)
     }
     func statusColorOrNil(_ s: String?) -> Color? {
         switch (s ?? "").lowercased() {
         case "green": return PX.ok
         case "yellow": return PX.warn
-        case "red": return PX.danger
+        // "red" deliberately falls through to nil -> the muted/grey treatment above.
         default: return nil
         }
     }

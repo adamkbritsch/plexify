@@ -1973,11 +1973,18 @@ def api_dashboard_health():
     # last hour; yellow when idle; red while on a rate-limit cooldown; grey when disabled.
     try:
         from . import squid_adapter as _sq, autofill_engine as _ae4
+        import time as _t_sq
         sn = int(_ae4.get_provider_success_counts_1h().get("squid", 0) or 0)
         if not _sq.is_enabled():
             services["squid"] = {"state": "unknown", "detail": "disabled"}
         elif _sq._in_break():
-            services["squid"] = {"state": "red", "detail": "on cooldown (rate-limited)"}
+            # Say WHICH kind of stand-down. "rate-limited" was reported even when the real reason
+            # was that the host had vanished from DNS, which sends you looking for a throttle that
+            # isn't there. Either way it resumes on its own when the break expires.
+            _mins = max(1, int((_sq._in_break() - _t_sq.time()) / 60))
+            _why = "host offline" if _sq.host_unresolvable() else "rate-limited"
+            services["squid"] = {"state": "red",
+                                 "detail": f"paused — {_why}, retrying in {_mins}m · Qobuz hi-res"}
         elif sn > 0:
             services["squid"] = {"state": "green", "detail": f"working — {sn} import{'s' if sn != 1 else ''}/1h · Qobuz hi-res"}
         else:

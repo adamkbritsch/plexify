@@ -932,13 +932,20 @@ nav a.nav-secondary { opacity: 0.6; font-size: 0.9em; }
 }
 .srch-pill.green  .srch-dot { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.6); }
 .srch-pill.yellow .srch-dot { background: #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,0.6); }
-.srch-pill.red    .srch-dot { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.6); }
+/* A source that isn't working is OFF, not on fire. Red reads as "something is wrong, act now",
+   but a download source being unavailable is routine — a mirror goes down, an account logs out —
+   and Plexify just uses another one. So it greys out and dims instead: still obviously not the
+   healthy state, without shouting. (Green/yellow keep their colours; those are live states.) */
+.srch-pill.red    .srch-dot { background: #6b7280; box-shadow: none; }
+.srch-pill.red    { opacity: 0.55; }
+.srch-pill.red:hover { opacity: 1; }
 .srch-pill .srch-name   { font-weight: 600; color: var(--text); flex: 0 0 auto; white-space: nowrap; }
 .srch-pill .srch-detail {
   color: var(--muted); flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.srch-pill.red .srch-detail { color: var(--danger); }
+.srch-pill.red .srch-name,
+.srch-pill.red .srch-detail { color: var(--muted); }
 @media (max-width: 760px) { .sources-health { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* --- Live "Right now" source chip --- */
@@ -1516,7 +1523,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible,
 }
 .srch-pill.green  { border-color: var(--sp);     color: var(--sp); }
 .srch-pill.yellow { border-color: var(--warn);   color: var(--warn); }
-.srch-pill.red    { border-color: var(--danger); color: var(--danger); }
+.srch-pill.red    { border-color: var(--line-strong); color: var(--muted); }
 
 /* links: underline on hover only, brand gold */
 a { color: var(--text); text-decoration-color: var(--line-strong); }
@@ -1631,7 +1638,7 @@ html[data-theme="light"] .btn.primary, html[data-theme="light"] button.primary {
 }
 html[data-theme="light"] .srch-pill.green  { border-color: var(--ok); color: var(--ok); }
 html[data-theme="light"] .srch-pill.yellow { border-color: var(--warn); color: var(--warn); }
-html[data-theme="light"] .srch-pill.red    { border-color: var(--danger); color: var(--danger); }
+html[data-theme="light"] .srch-pill.red    { border-color: var(--line-strong); color: var(--muted); }
 /* pale-on-dark text baked into old badge washes -> readable on white */
 html[data-theme="light"] .badge, html[data-theme="light"] [class*="badge-"],
 html[data-theme="light"] .pill, html[data-theme="light"] .flash,

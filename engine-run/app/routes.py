@@ -1954,6 +1954,7 @@ def api_dashboard_health():
     # unknown(grey) when disabled. Mirrors the spotiflac/soulseek pill format.
     try:
         from . import telegram_picker as _tg, autofill_engine as _ae3
+        import time as _t_sq
         tcfg = _tg._cfg()
         tn = int(_ae3.get_provider_success_counts_1h().get("telegram", 0) or 0)
         if not tcfg["enabled"]:
@@ -1962,7 +1963,18 @@ def api_dashboard_health():
             services["telegram"] = {"state": "yellow", "detail": "enabled — needs setup in Settings"}
         else:
             bot = tcfg["bot"] or "@BeatSpotBot"
-            if tn > 0:
+            _tb = _tg._in_break()
+            if _tb:
+                # The bot has a daily cap and simply goes silent once you hit it. Plexify already
+                # backs off for 30 minutes and clears the break the moment the bot answers again —
+                # but reporting that as "idle" made a source that CANNOT currently deliver look the
+                # same as one that merely had a quiet hour. Say it plainly, and say when it retries.
+                # (Direct requests are what's capped; already-delivered files in the chat history
+                # are still reusable, which is why this isn't a hard failure.)
+                _tm = max(1, int((_tb - _t_sq.time()) / 60))
+                services["telegram"] = {"state": "red",
+                                        "detail": f"paused — bot limit reached, retrying in {_tm}m · {bot}"}
+            elif tn > 0:
                 services["telegram"] = {"state": "green",
                                         "detail": f"working — {tn} import{'s' if tn != 1 else ''}/1h · {bot}"}
             else:

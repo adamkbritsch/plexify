@@ -812,6 +812,24 @@ def _autostar_record_liked(track_obj, tid, title, artist):
         log.exception("_autostar_record_liked")
 
 
+def _is_saved_track(sid, saved_ids, saved_by_title, row_track_ids, plex_artist, title_key) -> bool:
+    """Did the user actually save this song (liked it, or put it in a playlist)?
+
+    An exact Spotify id is proof. Otherwise the track has to match a saved song by title AND
+    either share an artist token with it (via the existing _artist_tokens, which drops stopwords
+    so "Coolio & L.V." still matches liked "Coolio"), or have been acquired by a row that was
+    fetching that exact saved track.
+    """
+    if sid and sid in saved_ids:
+        return True
+    cands = saved_by_title.get(title_key or "")
+    if not cands:
+        return False
+    at = _artist_tokens(plex_artist)
+    return any((at & ca) or (tid and tid in (row_track_ids or ()))
+               for ca, tid in cands)
+
+
 def autostar_place_tick(batch: int = 200) -> dict:
     """Star (5★) every track Plexify has recently placed in Plex — liked songs AND
     album-completion filler — and record each in AutoStar so an un-star is detectable.
@@ -846,6 +864,24 @@ def autostar_place_tick(batch: int = 200) -> dict:
     with SessionLocal() as s:
         known = {str(k) for (k,) in s.execute(select(AutoStar.plex_track_key)).all()}
         liked_rows = list(s.scalars(select(SpotifyLikedTrack)).all())
+        # SAVED = what the user actually put in their library: liked songs PLUS everything in
+        # their playlists. Album-completion filler — the other 25 tracks Plexify downloaded to
+        # get the one song they wanted — is NOT saved, so it must not be starred. Starring it
+        # was noise on two counts: it filled the library with 5-star ratings the user never
+        # gave, and it made every one of those tracks a candidate for the un-star dispute flow,
+        # which only makes sense for songs they care about.
+        from .db import LocalTrack as _LocalTrack
+        saved_ids = {lr.spotify_track_id for lr in liked_rows if lr.spotify_track_id}
+        saved_by_title = {}
+        def _saved_add(_tid, _artist, _title):
+            saved_by_title.setdefault(_norm_title_key(_title or ""), []).append(
+                (_artist_tokens(_artist), _tid))
+        for lr in liked_rows:
+            _saved_add(lr.spotify_track_id, lr.artist, lr.title)
+        for pt in s.scalars(select(_LocalTrack)).all():
+            if pt.spotify_track_id:
+                saved_ids.add(pt.spotify_track_id)
+            _saved_add(pt.spotify_track_id, pt.artist, pt.title)
         liked_title_by_tid = {lr.spotify_track_id: _norm_title_key(lr.title or "") for lr in liked_rows}
         # Keyed on (artist, title). A title-only key mis-attributes an album-filler track to
         # an unrelated liked song that shares a common title (e.g. 'Intro'/'Interlude'/'Outro'),
@@ -893,9 +929,17 @@ def autostar_place_tick(batch: int = 200) -> dict:
             sid = None
             if row_id is not None:
                 sid = next((tid for tid in row_tids.get(row_id, ()) if liked_title_by_tid.get(tid) == tk), None)
+            t_artist = getattr(t, "originalTitle", None) or getattr(t, "grandparentTitle", "") or ""
             if not sid:
-                t_artist = getattr(t, "originalTitle", None) or getattr(t, "grandparentTitle", "") or ""
                 sid = liked_by_artist_title.get((_norm_title_key(t_artist), tk))
+            # Only star what the user saved. Match on the title AND some artist overlap, because
+            # Plex's artist often differs from Spotify's ("Various Artists", "A;B", "A & B") — a
+            # title-only match would grab an unrelated song that happens to share a common title
+            # and later dispute the WRONG file.
+            if not _is_saved_track(sid, saved_ids, saved_by_title, row_tids.get(row_id, ()),
+                                   t_artist, tk):
+                out["unsaved"] = out.get("unsaved", 0) + 1
+                continue
             if _plex_rate(t, rating):
                 out["starred"] += 1
             else:

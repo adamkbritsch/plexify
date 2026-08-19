@@ -302,6 +302,36 @@ final class PlexifyStore: ObservableObject {
         if let d: AudiobooksStatusDTO = await get("/api/audiobooks/status") { audiobooks = d }
     }
     @Published var audiobookOrganizeMsg: String?
+    @Published var audiobookRefreshing = false
+
+    /// Re-detect: ask the organizer to re-scan the drop folder RIGHT NOW, then follow the result.
+    ///
+    /// Dropping a book in and waiting is the common case, and it used to look broken: the page
+    /// loads its status once on entry and never polls, so even after the daemon found the new
+    /// file the numbers on screen stayed where they were. This does the whole gesture — scan,
+    /// then keep re-reading status while the pass runs — so a book you just added shows up
+    /// without having to leave the page and come back.
+    func refreshAudiobooks() async {
+        guard !audiobookRefreshing else { return }
+        audiobookRefreshing = true
+        defer { audiobookRefreshing = false }
+        audiobookOrganizeMsg = "checking for new books…"
+        await loadAudiobooks()                       // instant: show what we already know
+        _ = await postJSON("/api/audiobooks/organize-now", [:])   // scan the drop folder now
+        // Follow the pass. Stop early once it has gone quiet and nothing is left waiting, so a
+        // no-op refresh settles in a second or two rather than spinning for the full window.
+        for i in 0..<20 {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await loadAudiobooks()
+            let busy = audiobooks?.working_on?.file != nil
+            // Still-in-flight work only. `review` is a queue waiting on YOU, not on the
+            // pipeline, so it must not keep the spinner going forever.
+            let waiting = (audiobooks?.dropped ?? 0) + (audiobooks?.converting ?? 0)
+                        + (audiobooks?.untagged ?? 0)
+            if !busy && waiting == 0 && i >= 1 { break }
+        }
+        audiobookOrganizeMsg = nil
+    }
     func organizeAudiobooksNow() async {
         struct R: Codable { var ok: Bool?; var message: String? }
         audiobookOrganizeMsg = "starting…"

@@ -13,6 +13,7 @@
     <h2 style="margin:0">Pipeline</h2>
     <span class="muted small" id="ab-working"></span>
     <span style="flex:1"></span>
+    <button type="button" class="btn" id="ab-refresh" title="Scan the drop folder for books you just added, and refresh this page">Refresh</button>
     <button type="button" class="btn primary" id="ab-organize-now">Organize now</button>
     <span class="muted small" id="ab-org-msg"></span>
   </div>
@@ -335,7 +336,12 @@
   };
 
   async function poll(){
-    try { renderStatus(await (await fetch('/api/audiobooks/status')).json()); } catch(e){}
+    // Returns the status too, so a caller following a pass can tell when it has settled.
+    try {
+      const d = await (await fetch('/api/audiobooks/status')).json();
+      renderStatus(d);
+      return d;
+    } catch(e){ return null; }
   }
   async function loadShelf(){
     try { shelf = (await (await fetch('/api/audiobooks/library')).json()).items || []; renderShelf(); } catch(e){}
@@ -377,6 +383,27 @@
     if (!a || !t) { alert('Author and title are both needed.'); return; }
     abResolve(file, null, encodeURIComponent(a), encodeURIComponent(t));
   };
+
+  // Re-detect: for when a book was just dropped in. Scans the drop folder, then follows the
+  // pass so the counts move on their own instead of needing a page reload.
+  $('ab-refresh').addEventListener('click', async () => {
+    const btn = $('ab-refresh'), msg = $('ab-org-msg');
+    btn.disabled = true; btn.textContent = 'Checking…';
+    msg.textContent = 'checking for new books…';
+    try {
+      await poll();                                                    // instant: what we know
+      await fetch('/api/audiobooks/organize-now', {method:'POST'});     // scan the drop folder now
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const st = await poll();
+        const busy = !!(st && st.working_on && st.working_on.file);
+        const waiting = ((st&&st.dropped)||0) + ((st&&st.converting)||0) + ((st&&st.untagged)||0);
+        if (!busy && waiting === 0 && i >= 1) break;                    // settle a no-op fast
+      }
+    } catch(e){ msg.textContent = 'refresh failed'; }
+    btn.disabled = false; btn.textContent = 'Refresh';
+    setTimeout(()=>{ if (msg.textContent === 'checking for new books…') msg.textContent=''; }, 1000);
+  });
 
   $('ab-organize-now').addEventListener('click', async () => {
     const msg = $('ab-org-msg');

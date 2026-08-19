@@ -94,6 +94,16 @@ struct AudiobooksView: View {
                         Text(msg).font(.system(size: 11)).foregroundStyle(PX.muted).lineLimit(1)
                     }
                     Spacer()
+                    // Re-detect: for when you have just dropped a book in and want it picked up
+                    // now. Scans the drop folder and then follows the pass, so the counts move
+                    // on their own instead of needing you to leave the page and come back.
+                    Button { Task { await store.refreshAudiobooks() } } label: {
+                        Label(store.audiobookRefreshing ? "Checking…" : "Refresh",
+                              systemImage: "arrow.clockwise")
+                    }.buttonStyle(DashCtlButtonStyle())
+                        .disabled(st?.feature_enabled != true || st?.reachable != true
+                                  || store.audiobookRefreshing)
+                        .help("Scan the drop folder for books you just added, and refresh this page")
                     Button { Task { await store.organizeAudiobooksNow() } } label: {
                         Label("Organize now", systemImage: "wand.and.rays")
                     }.buttonStyle(DashCtlButtonStyle())

@@ -153,6 +153,14 @@ struct AudiobooksView: View {
                                     Badge(text: "stalled?", tint: PX.warn)
                                 }
                                 Spacer()
+                                // ETA earns the brighter colour — it is the one thing you came to
+                                // this row to find out. Absent while the model has too little to
+                                // go on, or while the converter is stalled: no number beats a
+                                // confident wrong one.
+                                if let e = a.eta_text, !e.isEmpty, a.stalled != true {
+                                    Text("~\(e) left").font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(PX.sp)
+                                }
                                 Text(convDetail(a)).font(.system(size: 11)).foregroundStyle(PX.muted)
                             }
                             ProgressView(value: Double(a.percent ?? 0), total: 100)

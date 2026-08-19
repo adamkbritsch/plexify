@@ -435,6 +435,8 @@ struct ConvertingBookDTO: Codable {
     var files: Int?           // tracks total
     var src_bytes: Int64?
     var stalled: Bool?
+    var eta_seconds: Int?     // nil when no honest estimate exists (stalled, or too little data)
+    var eta_text: String?
 }
 
 struct AudiobooksStatusDTO: Codable {

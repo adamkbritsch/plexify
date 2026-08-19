@@ -3797,6 +3797,22 @@ def _refresh_audiobook_status():
                 _AB_CACHE[k] = st[k]
         if not st.get("reachable"):
             _AB_CACHE["reachable"] = False
+        # Feed the converter observation to the ETA model. This runs on the SAME cadence the page
+        # polls at, which is exactly what the rate model wants — it measures wall-clock between
+        # observations rather than trusting any progress percentage, and it rejects the intervals
+        # that aren't evidence (daemon restart, wedged ffmpeg, a new book starting).
+        try:
+            from . import audiobook_eta
+            conv = _AB_CACHE.get("converter") or {}
+            act = conv.get("active") if isinstance(conv, dict) else None
+            if act:
+                secs = audiobook_eta.observe(act)
+                act["eta_seconds"] = int(secs) if secs is not None else None
+                act["eta_text"] = audiobook_eta.format_eta(secs)
+            else:
+                audiobook_eta.note_finished()   # learn what assembling actually cost
+        except Exception:
+            log.exception("audiobook ETA update failed")   # never break the status page
     except Exception:
         log.exception("audiobook status refresh failed")
     finally:

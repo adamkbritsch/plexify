@@ -117,6 +117,7 @@
 .ab-rev-manual{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center}
 .ab-rev-manual input{background:rgba(255,255,255,0.03);border:1px solid var(--line);border-radius:6px;color:var(--fg);padding:5px 8px;font-size:12px}
 .ab-rev-badge{font-size:10px;font-weight:600;letter-spacing:.4px;color:#ffb000;border:1px solid rgba(255,176,0,.5);border-radius:4px;padding:1px 6px;text-transform:uppercase}
+  .ab-eta { color: var(--sp); font-weight: 600; }
 </style>
 
 <script>
@@ -159,7 +160,7 @@
         <div class="ab-conv-row">
           <div class="row" style="justify-content:space-between; gap:10px">
             <strong style="font-size:13px">${plxEsc(a.book||'?')}${a.stalled ? ' <span class="ab-rev-badge">stalled?</span>' : ''}</strong>
-            <span class="muted small">${a.phase==='assembling' ? 'assembling the m4b' : `${a.done??0}/${a.files??0} tracks`} · ${a.percent??0}%</span>
+            <span class="small">${(a.eta_text && !a.stalled) ? `<span class="ab-eta">~${plxEsc(a.eta_text)} left</span> · ` : ''}<span class="muted">${a.phase==='assembling' ? 'assembling the m4b' : `${a.done??0}/${a.files??0} tracks`} · ${a.percent??0}%</span></span>
           </div>
           <div class="ab-bar"><div style="width:${a.percent??0}%"></div></div>
         </div>` :

@@ -658,6 +658,34 @@ def _ui_safe(rec: dict) -> dict:
     return rec
 
 
+def organized_asins() -> set:
+    """ASINs whose book is in the library RIGHT NOW (ledger says organized, file still there).
+
+    The wanted list uses this to know a book actually arrived, rather than inferring it from a
+    clock. Same existence check book_records makes, and for the same reason: a ledger line is a
+    record that something happened once, not proof the file is still there.
+    """
+    out = set()
+    try:
+        with open(_ledger_path(BOOKS_LEDGER), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("status") != "organized":
+                    continue
+                asin, dest = rec.get("asin"), rec.get("dest")
+                if asin and dest and os.path.exists(dest):
+                    out.add(str(asin))
+    except FileNotFoundError:
+        pass
+    return out
+
+
 def book_records(limit: int = 30) -> list:
     """Most-recent-first tail of the books ledger (the UI's recent list + review queue).
     An 'organized' record whose library file has since VANISHED (deleted, moved) is dropped

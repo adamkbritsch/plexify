@@ -296,15 +296,18 @@ struct AudiobooksView: View {
                             Spacer()
                             Text(wantLabel(w)).font(.system(size: 11))
                                 .foregroundStyle(wantTint(w)).lineLimit(1)
-                            if w.status != "delivered" {
-                                Button {
-                                    Task { _ = await store.unwantAudiobook(asin: w.asin ?? "",
-                                                                           title: w.title ?? "") }
-                                } label: {
-                                    Image(systemName: "xmark")
-                                }.buttonStyle(GhostButtonStyle(small: true))
-                                    .help("Stop trying to get this book")
-                            }
+                            // Dismissable in EVERY state, delivered included. A delivered book
+                            // clears itself once it reaches the library (or after a day if the
+                            // edition never matches), but until then hiding the button left rows
+                            // you could not get rid of by any means.
+                            Button {
+                                Task { _ = await store.unwantAudiobook(asin: w.asin ?? "",
+                                                                       title: w.title ?? "") }
+                            } label: {
+                                Image(systemName: "xmark")
+                            }.buttonStyle(GhostButtonStyle(small: true))
+                                .help(w.status == "delivered"
+                                      ? "Remove from the list" : "Stop trying to get this book")
                         }
                         .padding(.vertical, 6).padding(.horizontal, 10)
                         .inset(padding: 0, radius: PX.controlRadius, fill: PX.bg3, stroke: PX.line)

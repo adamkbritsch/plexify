@@ -43,6 +43,15 @@ DISMISSED_FILE = "audiobook_dismissed.json"
 # attempts -> hours until the next try; past the end = give up (~5 days total)
 _BACKOFF_HOURS = [2, 6, 12, 24, 24, 24, 24]
 _DOWNLOAD_TIMEOUT_S = 45 * 60
+# How long a finished want stays on the list. A delivered book is kept while it is still moving
+# through convert/organize — that is genuinely useful, it says "this is in flight" — and is
+# dropped the moment it reaches the library. The clock is only a backstop for when that match
+# never happens (the organizer filed a different edition, so a different ASIN). Without either,
+# delivered entries simply accumulated: the list still showed the LOTR trilogy five weeks after
+# it landed, and the UI hides the dismiss button on delivered rows, so they could not even be
+# cleared by hand.
+_DELIVERED_KEEP_S = 24 * 3600
+_GAVE_UP_KEEP_S = 7 * 24 * 3600
 _AUDIO_EXTS = {".m4b", ".m4a", ".mp3"}
 _BOOK_JUNK_RE = re.compile(r"\b(sample|preview|excerpt|trailer)\b", re.IGNORECASE)
 
@@ -239,14 +248,21 @@ def save_wants(wants: list) -> None:
     _save_json(WANTS_FILE, wants)
 
 
-def merge_save_wants(modified: list) -> None:
-    """Save the pass's status changes without dropping wants added concurrently. acquire_pass
-    only CHANGES status (never removes), so re-read the current file and overlay our per-key
-    versions; anything added since our snapshot survives."""
+def merge_save_wants(modified: list, removed_keys=()) -> None:
+    """Save the pass's changes without dropping wants added concurrently: re-read the current
+    file and overlay our per-key versions, so anything added since our snapshot survives.
+
+    Removals have to be passed EXPLICITLY. The merge rebuilds from what is on disk, so an entry
+    simply missing from `modified` is not a removal — it reads as "unchanged" and comes straight
+    back. Pruning by dropping items from the in-memory list therefore looks like it works and
+    silently does nothing.
+    """
+    drop = {k for k in (removed_keys or ()) if k}
     with _wants_lock():
         mod_by = {_want_key(w): w for w in modified}
         current = load_wants()
-        merged = [mod_by.get(_want_key(w), w) for w in current]
+        merged = [mod_by.get(_want_key(w), w) for w in current
+                  if _want_key(w) not in drop]
         _save_json(WANTS_FILE, merged)
 
 
@@ -508,6 +524,17 @@ def _acquire_pass_locked(import_dir: str, out: dict) -> dict:
     now = time.time()
     dirty = False
 
+    # Tidying finished entries has nothing to do with slskd, so it must not be gated behind the
+    # download logic below — a list full of delivered books should still clear itself while
+    # Soulseek is unreachable.
+    _early = _prune_finished(wants, now)
+    if _early:
+        merge_save_wants(wants, removed_keys=_early)
+        wants = [w for w in wants if _want_key(w) not in _early]
+        out["pruned"] = len(_early)
+        if not wants:
+            return out
+
     for w in wants:
         if w.get("status") != "downloading":
             continue
@@ -589,6 +616,34 @@ def _acquire_pass_locked(import_dir: str, out: dict) -> dict:
     if any(v for k, v in out.items() if k != "skipped"):
         log.info("audiobook acquire_pass: %s", out)
     return out
+
+
+def _prune_finished(wants: list, now: float) -> set:
+    """Keys of wants that are finished with. Returns keys, NOT a mutated list — see
+    merge_save_wants: a removal has to be stated explicitly or it does not happen.
+
+    A want is finished when the book is in the library (the only signal that actually means
+    "done"), or when enough time has passed that keeping it is just clutter. Giving up is kept
+    around far longer than success: a book that could not be found is something you may still
+    want to see and retry, whereas one that arrived has nothing left to tell you.
+    """
+    try:
+        from .audiobook_organizer import organized_asins
+        arrived = organized_asins()
+    except Exception:
+        arrived = set()          # never let a ledger problem strand the list
+    drop = set()
+    for w in wants:
+        st = w.get("status")
+        if st == "delivered":
+            age = now - float(w.get("delivered_at") or now)
+            if (w.get("asin") and str(w["asin"]) in arrived) or age > _DELIVERED_KEEP_S:
+                drop.add(_want_key(w))
+        elif st == "gave_up":
+            age = now - float(w.get("last_attempt_at") or w.get("added_at") or now)
+            if age > _GAVE_UP_KEEP_S:
+                drop.add(_want_key(w))
+    return drop
 
 
 # Only slskd's COMPLETE dirs — never the raw download root (that includes incomplete/ and,
